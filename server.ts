@@ -1,7 +1,6 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -9,6 +8,24 @@ const SPREADSHEET_ID = '1VyP2x_0zRX8iqa8XadKyURKH5Yz55WFJVECaeQUpP0g';
 const PERMANENT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzTYfIFIPwO4iSFE_-TYOcE4jqx7XA_M-WBh59qy8MOsLqNLKFPIf-N10ijaErDYGqE4A/exec';
 
 app.use(express.json());
+
+// Normalize request URL for serverless/Vercel environments
+app.use((req: Request, _res: Response, next) => {
+  if (
+    !req.url.startsWith('/api') &&
+    (req.url.startsWith('/auth') ||
+      req.url.startsWith('/user') ||
+      req.url.startsWith('/admin') ||
+      req.url.startsWith('/trainings') ||
+      req.url.startsWith('/undangan') ||
+      req.url.startsWith('/sync') ||
+      req.url.startsWith('/webhook') ||
+      req.url.startsWith('/health'))
+  ) {
+    req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
+  }
+  next();
+});
 
 // Type Definitions
 export interface UserRecord {
@@ -89,11 +106,17 @@ interface DatabaseState {
   adminPassword?: string;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const isVercel = Boolean(process.env.VERCEL);
+const DATA_DIR = isVercel ? path.resolve('/tmp', 'data') : path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.resolve(DATA_DIR, 'tc_database.json');
+const BUNDLED_DATA_FILE = path.resolve(process.cwd(), 'data', 'tc_database.json');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+} catch {
+  // Ignored on read-only serverless platforms
 }
 
 // In-Memory Database with persistent storage
@@ -110,10 +133,14 @@ const db: DatabaseState = {
   adminPassword: '',
 };
 
-// Load saved local data if available
-if (fs.existsSync(DATA_FILE)) {
+// Load saved local data if available (supports pre-bundled file or /tmp cache)
+const fileToLoad = fs.existsSync(DATA_FILE)
+  ? DATA_FILE
+  : (fs.existsSync(BUNDLED_DATA_FILE) ? BUNDLED_DATA_FILE : null);
+
+if (fileToLoad) {
   try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+    const raw = fs.readFileSync(fileToLoad, 'utf-8');
     const parsed = JSON.parse(raw);
     if (parsed.users) db.users = parsed.users;
     if (parsed.stores) db.stores = parsed.stores;
@@ -149,7 +176,14 @@ function persistDb(force = false) {
       return; // Data has not changed, do NOT touch disk to avoid triggering watcher or disk churn
     }
     lastPersistedHash = currentHash;
-    fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    } catch {
+      // On platforms where filesystem is read-only, in-memory state is maintained
+    }
   } catch (err) {
     console.error('Failed to persist db:', err);
   }
@@ -585,13 +619,38 @@ async function syncFromGoogleSheets(isSilentAutoSync = false): Promise<{
   }
 }
 
+let initialSyncPromise: Promise<any> | null = null;
+export async function ensureDbReady() {
+  if (Object.keys(db.users).length > 0) return;
+  if (!initialSyncPromise) {
+    initialSyncPromise = syncFromGoogleSheets(true).finally(() => {
+      initialSyncPromise = null;
+    });
+  }
+  await initialSyncPromise;
+}
+
 // Initial Sync
 syncFromGoogleSheets();
 
-// Silent Background Auto Sync (runs quietly behind the scenes every 30s without disk churn or screen flicker)
-setInterval(() => {
-  syncFromGoogleSheets(true).catch(e => console.error('Silent background sync notice:', e));
-}, 30000);
+// Silent Background Auto Sync (runs quietly behind the scenes every 30s in persistent environments)
+if (!isVercel) {
+  setInterval(() => {
+    syncFromGoogleSheets(true).catch(e => console.error('Silent background sync notice:', e));
+  }, 30000);
+}
+
+// Middleware: Ensure database is ready before processing API routes
+app.use(async (_req: Request, _res: Response, next) => {
+  try {
+    if (Object.keys(db.users).length === 0) {
+      await ensureDbReady();
+    }
+  } catch (err) {
+    console.error('ensureDbReady middleware error:', err);
+  }
+  next();
+});
 
 function createSession(nik: string, role: string) {
   const token = 'tc_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
@@ -2053,9 +2112,10 @@ app.get('/api/undangan/export-csv', authMiddleware, (req: Request, res: Response
 
 // Mount Vite in dev mode or serve static files in production
 async function startServer() {
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
 
   if (!isProd) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -2068,15 +2128,23 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(distPath, 'index.html'));
-    });
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get('*', (_req, res) => {
+        res.sendFile(path.resolve(distPath, 'index.html'));
+      });
+    }
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Portal TC Surabaya Server running on http://0.0.0.0:${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Portal TC Surabaya Server running on http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;

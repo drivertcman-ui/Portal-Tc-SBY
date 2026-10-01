@@ -17,6 +17,21 @@ function handleSessionExpired() {
   window.dispatchEvent(new CustomEvent('tc_auth_logout'));
 }
 
+async function parseJsonResponse<T = any>(res: Response): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    if (!res.ok) {
+      if (res.status === 404) {
+        throw new Error('Endpoint API tidak ditemukan (404). Pastikan server backend / vercel.json terkonfigurasi dengan benar.');
+      }
+      throw new Error(`Server error (${res.status}): Terjadi kendala respon dari server.`);
+    }
+    throw new Error('Format respon server tidak valid.');
+  }
+}
+
 export const api = {
   getToken(): string | null {
     return localStorage.getItem(TOKEN_KEY);
@@ -37,7 +52,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ nik }),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       throw new Error(data.error || 'Gagal login dengan NIK');
     }
@@ -51,7 +66,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       throw new Error(data.error || 'Gagal login Administrator');
     }
@@ -66,7 +81,7 @@ export const api = {
     const res = await fetch('/api/user/me', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -92,7 +107,7 @@ export const api = {
       },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -114,7 +129,7 @@ export const api = {
   }> {
     const res = await fetch('/api/trainings/schedule');
     if (!res.ok) throw new Error('Gagal memuat jadwal training');
-    return res.json();
+    return parseJsonResponse(res);
   },
 
   async getMyTrainingSchedules(): Promise<{
@@ -135,7 +150,7 @@ export const api = {
     const res = await fetch('/api/trainings/my-schedule', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -156,7 +171,7 @@ export const api = {
     const res = await fetch(`/api/trainings/check-participant?${query.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -183,7 +198,7 @@ export const api = {
       },
       body: JSON.stringify({ tanggal, jenis_training }),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -236,7 +251,7 @@ export const api = {
     const res = await fetch(`/api/admin/absensi?${query.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -249,7 +264,7 @@ export const api = {
   async getDashboardStats(): Promise<DashboardStats> {
     const res = await fetch('/api/rekap/stats');
     if (!res.ok) throw new Error('Gagal memuat rekap statistik');
-    return res.json();
+    return parseJsonResponse(res);
   },
 
   async getAdminEmployees(params: {
@@ -277,7 +292,7 @@ export const api = {
     const res = await fetch(`/api/admin/employees?${query.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -302,7 +317,7 @@ export const api = {
       },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -320,7 +335,7 @@ export const api = {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -338,7 +353,7 @@ export const api = {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -355,7 +370,7 @@ export const api = {
     const res = await fetch('/api/admin/config-webhook', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    return res.json();
+    return parseJsonResponse(res);
   },
 
   async saveWebhookConfig(webhookUrl: string): Promise<{ success: boolean; webhookUrl: string }> {
@@ -370,7 +385,7 @@ export const api = {
       },
       body: JSON.stringify({ webhookUrl }),
     });
-    return res.json();
+    return parseJsonResponse(res);
   },
 
   async pushAbsensiToSheet(): Promise<{ success: boolean; message: string; pushedCount: number }> {
@@ -381,7 +396,7 @@ export const api = {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -399,7 +414,7 @@ export const api = {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -417,7 +432,7 @@ export const api = {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -435,7 +450,7 @@ export const api = {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -481,7 +496,7 @@ export const api = {
     const res = await fetch(`/api/undangan?${query.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -508,7 +523,7 @@ export const api = {
       body: JSON.stringify(payload),
     });
 
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
@@ -536,7 +551,7 @@ export const api = {
     const res = await fetch(`/api/admin/belum-absen?${query.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (!res.ok) {
       if (res.status === 401) {
         handleSessionExpired();
