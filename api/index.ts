@@ -1,8 +1,12 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 
 const app = express();
+const SESSION_SECRET =
+  process.env.SESSION_SECRET ||
+  'portal-tc-surabaya-hmac-jwt-secret-session-key-2026-production';
 const PORT = Number(process.env.PORT) || 3000;
 const SPREADSHEET_ID = '1VyP2x_0zRX8iqa8XadKyURKH5Yz55WFJVECaeQUpP0g';
 const PERMANENT_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzTYfIFIPwO4iSFE_-TYOcE4jqx7XA_M-WBh59qy8MOsLqNLKFPIf-N10ijaErDYGqE4A/exec';
@@ -652,15 +656,82 @@ app.use(async (_req: Request, _res: Response, next) => {
   next();
 });
 
-function createSession(nik: string, role: string) {
-  const token = 'tc_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
-  db.sessions[token] = {
-    nik,
+interface SessionData {
+  nik: string;
+  role: string;
+  expires: number;
+}
+
+function createSession(nik: string, role: string): string {
+  const cleanNik = clean(nik);
+  const expires = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 days
+  const payload = {
+    nik: cleanNik,
     role,
-    expires: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days
+    expires,
+    iat: Date.now(),
+    nonce: Math.random().toString(36).substring(2, 10),
+  };
+
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', SESSION_SECRET).update(payloadB64).digest('base64url');
+  const token = `tc_${payloadB64}.${signature}`;
+
+  // Keep in-memory cache for fast lookup
+  db.sessions[token] = {
+    nik: cleanNik,
+    role,
+    expires,
   };
   persistDb();
+
   return token;
+}
+
+function verifyAndGetSession(token: string): SessionData | null {
+  if (!token || typeof token !== 'string') return null;
+
+  // 1. Fast in-memory lookup
+  const inMem = db.sessions[token];
+  if (inMem && inMem.expires > Date.now()) {
+    return inMem;
+  }
+
+  // 2. Cryptographic verification for stateless serverless containers (e.g. Vercel)
+  if (token.startsWith('tc_') && token.includes('.')) {
+    try {
+      const dotIndex = token.indexOf('.');
+      const payloadB64 = token.substring(3, dotIndex);
+      const signature = token.substring(dotIndex + 1);
+
+      const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payloadB64).digest('base64url');
+
+      const sigBuf = Buffer.from(signature);
+      const expBuf = Buffer.from(expectedSig);
+
+      if (sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf)) {
+        const rawJson = Buffer.from(payloadB64, 'base64url').toString('utf-8');
+        const payload = JSON.parse(rawJson);
+
+        if (payload && payload.nik && payload.role && typeof payload.expires === 'number') {
+          if (payload.expires > Date.now()) {
+            const sessionData: SessionData = {
+              nik: String(payload.nik),
+              role: String(payload.role),
+              expires: payload.expires,
+            };
+            // Cache in memory for subsequent requests in this container
+            db.sessions[token] = sessionData;
+            return sessionData;
+          }
+        }
+      }
+    } catch (err) {
+      // Invalid signature or corrupted token
+    }
+  }
+
+  return null;
 }
 
 function authMiddleware(req: Request, res: Response, next: () => void) {
@@ -675,18 +746,16 @@ function authMiddleware(req: Request, res: Response, next: () => void) {
   if (!token) {
     return res.status(401).json({ error: 'Akses ditolak. Token otentikasi tidak ditemukan.', code: 'UNAUTHORIZED' });
   }
-  const session = db.sessions[token];
 
-  if (!session || session.expires < Date.now()) {
-    if (session && db.sessions[token]) {
+  const session = verifyAndGetSession(token);
+
+  if (!session) {
+    if (db.sessions[token]) {
       delete db.sessions[token];
       persistDb();
     }
     return res.status(401).json({ error: 'Sesi telah kedaluwarsa. Silakan login kembali.', code: 'SESSION_EXPIRED' });
   }
-
-  // Extend session expiry for active usage
-  session.expires = Date.now() + 30 * 24 * 60 * 60 * 1000;
 
   (req as any).userSession = session;
   next();
@@ -807,6 +876,24 @@ app.post('/api/auth/login-admin', (req: Request, res: Response) => {
   });
 });
 
+// 2b. Logout Endpoint
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  let token = '';
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.replace('Bearer ', '').trim();
+  } else if (req.query.token) {
+    token = String(req.query.token).trim();
+  }
+
+  if (token && db.sessions[token]) {
+    delete db.sessions[token];
+    persistDb();
+  }
+
+  return res.json({ success: true, message: 'Berhasil keluar.' });
+});
+
 // 3. Get Current User Profile & Synced Akun Pintar
 app.get('/api/user/me', authMiddleware, (req: Request, res: Response) => {
   const session = (req as any).userSession;
@@ -826,12 +913,13 @@ app.get('/api/user/me', authMiddleware, (req: Request, res: Response) => {
     });
   }
 
-  const user = db.users[session.nik];
+  const cleanNik = clean(session.nik);
+  const user = db.users[cleanNik] || db.users[session.nik];
   if (!user) {
     return res.status(404).json({ error: 'Data karyawan tidak ditemukan.' });
   }
 
-  const akunPintar = db.akunPintar[session.nik] || {
+  const akunPintar = db.akunPintar[cleanNik] || db.akunPintar[session.nik] || {
     nik: user.nik,
     nama: user.nama,
     jabatan: user.jabatan,

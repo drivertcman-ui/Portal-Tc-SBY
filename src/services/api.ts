@@ -11,9 +11,13 @@ import {
 } from '../types';
 
 const TOKEN_KEY = 'portal_tc_token';
+const USER_KEY = 'portal_tc_user';
+const AKUN_PINTAR_KEY = 'portal_tc_akun_pintar';
 
 function handleSessionExpired() {
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(AKUN_PINTAR_KEY);
   window.dispatchEvent(new CustomEvent('tc_auth_logout'));
 }
 
@@ -41,8 +45,48 @@ export const api = {
     localStorage.setItem(TOKEN_KEY, token);
   },
 
+  getCachedUser(): User | null {
+    try {
+      const raw = localStorage.getItem(USER_KEY);
+      return raw ? (JSON.parse(raw) as User) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  getCachedAkunPintar(): AkunPintar | null {
+    try {
+      const raw = localStorage.getItem(AKUN_PINTAR_KEY);
+      return raw ? (JSON.parse(raw) as AkunPintar) : null;
+    } catch {
+      return null;
+    }
+  },
+
+  setCachedUser(user: User | null, akunPintar: AkunPintar | null) {
+    if (user) {
+      localStorage.setItem(USER_KEY, JSON.stringify(user));
+    } else {
+      localStorage.removeItem(USER_KEY);
+    }
+    if (akunPintar) {
+      localStorage.setItem(AKUN_PINTAR_KEY, JSON.stringify(akunPintar));
+    } else {
+      localStorage.removeItem(AKUN_PINTAR_KEY);
+    }
+  },
+
   clearToken() {
+    const token = this.getToken();
+    if (token) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    }
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(AKUN_PINTAR_KEY);
     window.dispatchEvent(new CustomEvent('tc_auth_logout'));
   },
 
@@ -57,6 +101,7 @@ export const api = {
       throw new Error(data.error || 'Gagal login dengan NIK');
     }
     this.setToken(data.token);
+    this.setCachedUser(data.user, data.akunPintar);
     return data;
   },
 
@@ -71,6 +116,7 @@ export const api = {
       throw new Error(data.error || 'Gagal login Administrator');
     }
     this.setToken(data.token);
+    this.setCachedUser(data.user, null);
     return data;
   },
 
@@ -88,6 +134,7 @@ export const api = {
       }
       throw new Error(data.error || 'Sesi tidak valid');
     }
+    this.setCachedUser(data.user, data.akunPintar);
     return data;
   },
 

@@ -10,12 +10,13 @@ import { Header } from './components/Header';
 import { LoginPage } from './components/LoginPage';
 import { UserDashboard } from './components/UserDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [currentAkunPintar, setCurrentAkunPintar] = useState<AkunPintar | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(() => api.getCachedUser());
+  const [currentAkunPintar, setCurrentAkunPintar] = useState<AkunPintar | null>(() => api.getCachedAkunPintar());
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
-  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
+  const [isLoadingAuth, setIsLoadingAuth] = useState(() => !api.getCachedUser() && Boolean(api.getToken()));
   const [isSyncing, setIsSyncing] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -114,8 +115,10 @@ export default function App() {
             return res.lastSyncedAt;
           });
         })
-        .catch(() => {
-          api.clearToken();
+        .catch((err) => {
+          // Do NOT clear token on network drops or temporary hiccups!
+          // Real 401s are handled by api.ts emitting 'tc_auth_logout'.
+          console.warn('Background session refresh notice (session maintained):', err);
         })
         .finally(() => {
           setIsLoadingAuth(false);
@@ -135,6 +138,7 @@ export default function App() {
   const handleLoginSuccess = (user: User, akunPintar: AkunPintar | null) => {
     setCurrentUser(user);
     setCurrentAkunPintar(akunPintar);
+    setIsLoadingAuth(false);
     showNotification(`Selamat datang, ${user.nama}!`, 'success');
   };
 
@@ -209,22 +213,24 @@ export default function App() {
 
       {/* Main Views */}
       <main className="flex-1">
-        {!currentUser ? (
-          <LoginPage onLoginSuccess={handleLoginSuccess} themeMode={effectiveTheme} />
-        ) : currentUser.role === 'user' ? (
-          <UserDashboard
-            user={currentUser}
-            initialAkunPintar={currentAkunPintar}
-            onUpdateAkunPintar={handleUpdateAkunPintar}
-            themeMode={effectiveTheme}
-          />
-        ) : (
-          <AdminDashboard
-            onForceSync={handleForceSync}
-            isSyncing={isSyncing}
-            themeMode={effectiveTheme}
-          />
-        )}
+        <ErrorBoundary fallbackMessage="Terjadi kendala pada tampilan dashboard">
+          {!currentUser ? (
+            <LoginPage onLoginSuccess={handleLoginSuccess} themeMode={effectiveTheme} />
+          ) : currentUser.role === 'user' ? (
+            <UserDashboard
+              user={currentUser}
+              initialAkunPintar={currentAkunPintar}
+              onUpdateAkunPintar={handleUpdateAkunPintar}
+              themeMode={effectiveTheme}
+            />
+          ) : (
+            <AdminDashboard
+              onForceSync={handleForceSync}
+              isSyncing={isSyncing}
+              themeMode={effectiveTheme}
+            />
+          )}
+        </ErrorBoundary>
       </main>
 
       {/* Footer */}
