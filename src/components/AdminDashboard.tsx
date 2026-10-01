@@ -29,6 +29,13 @@ import {
   GraduationCap,
   Clock,
   Filter,
+  KeyRound,
+  ShieldCheck,
+  UserX,
+  Copy,
+  Check,
+  FileSpreadsheet,
+  X,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -46,8 +53,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(true);
 
-  // Active View Tab: 'employees' | 'absensi' | 'undangan' | 'rekap'
-  const [activeTab, setActiveTab] = useState<'employees' | 'rekap' | 'absensi' | 'undangan'>('employees');
+  // Active View Tab: 'employees' | 'absensi' | 'undangan' | 'password'
+  const [activeTab, setActiveTab] = useState<'employees' | 'absensi' | 'undangan' | 'password'>('employees');
+
+  // Password Change State
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [passwordSuccessMessage, setPasswordSuccessMessage] = useState('');
+  const [passwordErrorMessage, setPasswordErrorMessage] = useState('');
 
   // Table 1 State: Karyawan & Akun Pintar
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
@@ -79,6 +97,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isClearingAllAbsensi, setIsClearingAllAbsensi] = useState(false);
   const [deleteAbsensiError, setDeleteAbsensiError] = useState('');
 
+  // Belum Absen Modal State
+  const [isBelumAbsenModalOpen, setIsBelumAbsenModalOpen] = useState(false);
+  const [belumAbsenData, setBelumAbsenData] = useState<any[]>([]);
+  const [isLoadingBelumAbsen, setIsLoadingBelumAbsen] = useState(false);
+  const [belumAbsenModalSearch, setBelumAbsenModalSearch] = useState('');
+  const [copiedType, setCopiedType] = useState<string | null>(null);
+
   // Schedules metadata for filter dropdowns
   const [trainingDates, setTrainingDates] = useState<string[]>([]);
   const [trainingTypes, setTrainingTypes] = useState<string[]>([]);
@@ -98,7 +123,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     absensiPage,
   });
 
+  const activeTabRef = useRef(activeTab);
+
   useEffect(() => {
+    activeTabRef.current = activeTab;
     filtersRef.current = {
       search,
       statusFilter,
@@ -134,15 +162,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isScriptModalOpen, setIsScriptModalOpen] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState('');
 
-  const loadStats = async () => {
+  const loadStats = async (isSilent = false) => {
     try {
-      setIsLoadingStats(true);
+      if (!isSilent) setIsLoadingStats(true);
       const data = await api.getDashboardStats();
-      setStats(data);
+      setStats(prev => {
+        if (JSON.stringify(prev) === JSON.stringify(data)) return prev;
+        return data;
+      });
     } catch (err) {
       console.error('Failed to load stats:', err);
     } finally {
-      setIsLoadingStats(false);
+      if (!isSilent) setIsLoadingStats(false);
     }
   };
 
@@ -151,9 +182,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     status?: string;
     jabatan?: string;
     page?: number;
-  }) => {
+  }, isSilent = false) => {
     try {
-      setIsLoadingTable(true);
+      if (!isSilent) setIsLoadingTable(true);
       const current = filtersRef.current;
       const res = await api.getAdminEmployees({
         search: overrideFilters?.search ?? current.search,
@@ -162,15 +193,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         page: overrideFilters?.page ?? current.page,
         limit: 25,
       });
-      setEmployees(res.data);
-      setTotalPages(res.pagination.totalPages);
-      setTotalCount(res.pagination.total);
+      setEmployees(prev => {
+        if (JSON.stringify(prev) === JSON.stringify(res.data)) return prev;
+        return res.data;
+      });
+      setTotalPages(prev => (prev === res.pagination.totalPages ? prev : res.pagination.totalPages));
+      setTotalCount(prev => (prev === res.pagination.total ? prev : res.pagination.total));
     } catch (err: any) {
       if (!err?.message?.includes('Sesi telah kedaluwarsa') && !err?.message?.includes('Akses ditolak')) {
         console.error('Failed to load employees:', err);
       }
     } finally {
-      setIsLoadingTable(false);
+      if (!isSilent) setIsLoadingTable(false);
     }
   };
 
@@ -181,9 +215,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     status?: string;
     cabang?: string;
     page?: number;
-  }) => {
+  }, isSilent = false) => {
     try {
-      setIsLoadingAbsensi(true);
+      if (!isSilent) setIsLoadingAbsensi(true);
       const current = filtersRef.current;
       const res = await api.getAdminAbsensiList({
         search: overrideFilters?.search ?? current.absensiSearch,
@@ -194,16 +228,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         page: overrideFilters?.page ?? current.absensiPage,
         limit: 25,
       });
-      setAbsensiList(res.data);
-      setAbsensiSummary(res.summary);
-      setAbsensiTotalPages(res.pagination.totalPages);
-      setAbsensiTotalCount(res.pagination.total);
+      setAbsensiList(prev => {
+        if (JSON.stringify(prev) === JSON.stringify(res.data)) return prev;
+        return res.data;
+      });
+      setAbsensiSummary(prev => {
+        if (
+          prev.total === res.summary.total &&
+          prev.totalHadir === res.summary.totalHadir &&
+          prev.totalBelum === res.summary.totalBelum &&
+          prev.percentage === res.summary.percentage
+        ) {
+          return prev;
+        }
+        return res.summary;
+      });
+      setAbsensiTotalPages(prev => (prev === res.pagination.totalPages ? prev : res.pagination.totalPages));
+      setAbsensiTotalCount(prev => (prev === res.pagination.total ? prev : res.pagination.total));
     } catch (err: any) {
       if (!err?.message?.includes('Sesi telah kedaluwarsa') && !err?.message?.includes('Akses ditolak')) {
         console.error('Failed to load absensi list:', err);
       }
     } finally {
-      setIsLoadingAbsensi(false);
+      if (!isSilent) setIsLoadingAbsensi(false);
     }
   };
 
@@ -230,12 +277,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     loadTrainingMetadata();
     api.getWebhookConfig().then(res => setWebhookUrl(res.webhookUrl)).catch(() => {});
 
-    // Live Auto-Sync Every 10 Seconds
+    // Silent background auto-sync every 30 seconds (runs behind the scenes without screen flicker or table reloading)
     const interval = setInterval(() => {
-      loadStats();
-      loadEmployees();
-      loadAbsensiList();
-    }, 10000);
+      loadStats(true);
+      if (activeTabRef.current === 'employees') {
+        loadEmployees(undefined, true);
+      } else if (activeTabRef.current === 'absensi') {
+        loadAbsensiList(undefined, true);
+      }
+    }, 30000);
 
     return () => clearInterval(interval);
   }, []);
@@ -275,7 +325,78 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleExportAbsensiCSV = () => {
     const token = api.getToken();
-    window.location.href = `/api/admin/export-absensi-csv?token=${token}`;
+    const query = new URLSearchParams();
+    if (token) query.append('token', token);
+    if (absensiSearch) query.append('search', absensiSearch);
+    if (absensiTanggalFilter && absensiTanggalFilter !== 'all') query.append('tanggal', absensiTanggalFilter);
+    if (absensiJenisFilter && absensiJenisFilter !== 'all') query.append('jenis_training', absensiJenisFilter);
+    if (absensiCabangFilter && absensiCabangFilter !== 'all') query.append('cabang', absensiCabangFilter);
+    if (absensiStatusFilter && absensiStatusFilter !== 'all') query.append('status', absensiStatusFilter);
+    window.location.href = `/api/admin/export-absensi-csv?${query.toString()}`;
+  };
+
+  const handleOpenBelumAbsenModal = async () => {
+    setIsBelumAbsenModalOpen(true);
+    setBelumAbsenModalSearch('');
+    setCopiedType(null);
+    try {
+      setIsLoadingBelumAbsen(true);
+      const res = await api.getBelumAbsenList({
+        search: absensiSearch,
+        tanggal: absensiTanggalFilter,
+        jenis_training: absensiJenisFilter,
+        cabang: absensiCabangFilter,
+      });
+      setBelumAbsenData(res.data);
+    } catch (err) {
+      console.error('Failed to load belum absen list:', err);
+    } finally {
+      setIsLoadingBelumAbsen(false);
+    }
+  };
+
+  const handleExportBelumAbsenCSV = () => {
+    const token = api.getToken();
+    const query = new URLSearchParams();
+    if (token) query.append('token', token);
+    if (absensiSearch) query.append('search', absensiSearch);
+    if (absensiTanggalFilter && absensiTanggalFilter !== 'all') query.append('tanggal', absensiTanggalFilter);
+    if (absensiJenisFilter && absensiJenisFilter !== 'all') query.append('jenis_training', absensiJenisFilter);
+    if (absensiCabangFilter && absensiCabangFilter !== 'all') query.append('cabang', absensiCabangFilter);
+    window.location.href = `/api/admin/export-belum-absen-csv?${query.toString()}`;
+  };
+
+  const handleCopyWhatsAppFormat = () => {
+    if (!belumAbsenData.length) return;
+    const tanggalStr = absensiTanggalFilter !== 'all' ? absensiTanggalFilter : 'Semua Tanggal';
+    const jenisStr = absensiJenisFilter !== 'all' ? absensiJenisFilter : 'Semua Jenis Training';
+    const cabangStr = absensiCabangFilter !== 'all' ? `Cabang ${absensiCabangFilter}` : 'Semua Cabang';
+
+    let text = `*DAFTAR PESERTA BELUM MELAKUKAN ABSENSI TRAINING*\n`;
+    text += `📅 Tanggal: ${tanggalStr}\n`;
+    text += `📚 Pelatihan: ${jenisStr}\n`;
+    text += `🏢 Cabang: ${cabangStr}\n`;
+    text += `⚠️ Total Belum Absen: ${belumAbsenData.length} Orang\n\n`;
+
+    belumAbsenData.forEach((item, idx) => {
+      text += `${idx + 1}. *${item.nama}* (${item.nik})\n`;
+      text += `   🏪 Toko: ${item.kode_toko} - ${item.nama_toko}\n`;
+      text += `   📖 Training: ${item.jenis_training} (${item.tanggal})\n\n`;
+    });
+
+    text += `_Harap segera melakukan pengisian absensi kehadiran melalui Portal TC Surabaya._`;
+
+    navigator.clipboard.writeText(text);
+    setCopiedType('wa');
+    setTimeout(() => setCopiedType(null), 2500);
+  };
+
+  const handleCopyNIKList = () => {
+    if (!belumAbsenData.length) return;
+    const niks = belumAbsenData.map(item => item.nik).join('\n');
+    navigator.clipboard.writeText(niks);
+    setCopiedType('nik');
+    setTimeout(() => setCopiedType(null), 2500);
   };
 
   const handleSingleDeleteAbsensi = async () => {
@@ -373,7 +494,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const handleSavePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordSuccessMessage('');
+    setPasswordErrorMessage('');
+
+    if (!currentPassword) {
+      setPasswordErrorMessage('Kata sandi saat ini wajib diisi.');
+      return;
+    }
+    if (!newPassword) {
+      setPasswordErrorMessage('Kata sandi baru wajib diisi.');
+      return;
+    }
+    if (newPassword.trim().length < 6) {
+      setPasswordErrorMessage('Kata sandi baru minimal harus 6 karakter.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordErrorMessage('Konfirmasi kata sandi baru tidak sesuai.');
+      return;
+    }
+
+    try {
+      setIsChangingPassword(true);
+      const res = await api.changeAdminPassword({
+        currentPassword,
+        newPassword: newPassword.trim(),
+        confirmPassword: confirmPassword.trim(),
+      });
+      setPasswordSuccessMessage(res.message || 'Kata sandi Administrator berhasil diperbarui!');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err: any) {
+      setPasswordErrorMessage(err.message || 'Gagal mengubah kata sandi Administrator.');
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
+
   const distinctJabatans = stats?.jabatanStats.map(j => j.jabatan) || [];
+
+  const filteredBelumAbsen = belumAbsenData.filter(item => {
+    if (!belumAbsenModalSearch.trim()) return true;
+    const q = belumAbsenModalSearch.toLowerCase().trim();
+    return (
+      item.nik?.toLowerCase().includes(q) ||
+      item.nama?.toLowerCase().includes(q) ||
+      item.nama_toko?.toLowerCase().includes(q) ||
+      item.kode_toko?.toLowerCase().includes(q) ||
+      item.jabatan?.toLowerCase().includes(q) ||
+      item.jenis_training?.toLowerCase().includes(q)
+    );
+  });
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
@@ -539,14 +713,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <span>Agenda Jadwal Training (Undangan)</span>
           </button>
           <button
-            onClick={() => setActiveTab('rekap')}
-            className={`px-4 py-2.5 text-xs font-extrabold rounded-xl transition cursor-pointer ${
-              activeTab === 'rekap'
+            onClick={() => setActiveTab('password')}
+            className={`px-4 py-2.5 text-xs font-extrabold rounded-xl transition flex items-center gap-1.5 cursor-pointer ${
+              activeTab === 'password'
                 ? 'bg-gradient-to-r from-[#E31E25] via-[#0054A6] to-[#003875] text-white shadow-lg shadow-[#0054A6]/30'
                 : isLight ? 'text-slate-700 hover:text-slate-900' : 'text-slate-400 hover:text-white'
             }`}
           >
-            Rekap Data & Progres Jabatan
+            <KeyRound className="w-4 h-4 text-[#FFD100]" />
+            <span>Ubah Password Admin</span>
           </button>
         </div>
       </div>
@@ -910,11 +1085,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           {/* Action Toolbar for Absensi */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <div className={`text-xs ${isLight ? 'text-slate-700 font-medium' : 'text-slate-400'}`}>
-              Total Peserta Hadir: <span className="font-mono text-emerald-600 dark:text-emerald-400 font-bold">{absensiSummary.totalHadir}</span> Orang
+            <div className={`text-xs flex items-center flex-wrap gap-2 ${isLight ? 'text-slate-700 font-medium' : 'text-slate-400'}`}>
+              <span>Total Peserta Hadir: <strong className="font-mono text-emerald-600 dark:text-emerald-400">{absensiSummary.totalHadir}</strong> Orang</span>
+              {absensiSummary.totalBelum > 0 && (
+                <span className="font-medium text-amber-600 dark:text-amber-400">
+                  • Belum Absen: <strong className="font-mono">{absensiSummary.totalBelum}</strong> Orang
+                </span>
+              )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {/* TOMBOL AMBIL DATA BELUM ABSEN SESUAI FILTER */}
               <button
+                type="button"
+                onClick={handleOpenBelumAbsenModal}
+                className="px-3.5 py-1.5 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-md"
+                title="Ambil dan unduh daftar peserta yang belum melakukan absensi sesuai data yang difilter"
+              >
+                <UserX className="w-3.5 h-3.5 text-[#FFD100]" />
+                <span>Ambil Data Belum Absen</span>
+                {absensiSummary.totalBelum > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-black bg-amber-950 text-amber-200 border border-amber-500/50">
+                    {absensiSummary.totalBelum}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
                 onClick={handleExportAbsensiCSV}
                 className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow"
               >
@@ -923,6 +1120,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </button>
               {absensiSummary.totalHadir > 0 && (
                 <button
+                  type="button"
                   onClick={() => setIsConfirmingClearAllAbsensi(true)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow border ${
                     isLight
@@ -1079,88 +1277,205 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* TAB 3: REKAPITULASI JABATAN & TOKO */}
-      {activeTab === 'rekap' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className={`lg:col-span-7 border rounded-2xl p-6 shadow-xl space-y-4 transition-colors ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-800/90 border-slate-700/80 text-white'
+      {/* TAB 3: UBAH KATA SANDI ADMINISTRATOR */}
+      {activeTab === 'password' && (
+        <div className="max-w-2xl mx-auto space-y-6">
+          <div className={`border rounded-2xl p-6 sm:p-8 shadow-xl transition-colors ${
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-900 border-slate-800 text-white'
           }`}>
-            <div className={`flex items-center justify-between pb-3 border-b ${isLight ? 'border-slate-200' : 'border-slate-700/60'}`}>
-              <h2 className={`text-sm font-bold flex items-center gap-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                <BarChart3 className="w-4 h-4 text-blue-500" />
-                <span>Rekapitulasi Progres per Jabatan</span>
-              </h2>
-              <span className={`text-[11px] font-mono ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
-                {stats?.jabatanStats.length || 0} Kategori
-              </span>
+            {/* Header */}
+            <div className="flex items-start gap-4 pb-6 border-b border-slate-200 dark:border-slate-800">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#0054A6] to-[#003875] border border-blue-400/30 flex items-center justify-center text-[#FFD100] shadow-md shrink-0">
+                <KeyRound className="w-6 h-6" />
+              </div>
+              <div>
+                <h2 className="text-lg sm:text-xl font-black tracking-tight">
+                  Ubah Kata Sandi Administrator
+                </h2>
+                <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
+                  Perbarui kata sandi login untuk akun Administrator Portal TC Surabaya. Kata sandi baru akan berlaku saat Anda login kembali ke dashboard admin.
+                </p>
+              </div>
             </div>
 
-            <div className="space-y-3.5 max-h-[480px] overflow-y-auto pr-1">
-              {stats?.jabatanStats.map(item => (
-                <div key={item.jabatan} className={`p-3 rounded-xl border space-y-2 ${
-                  isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-900/60 border-slate-700/50'
-                }`}>
-                  <div className="flex justify-between items-center text-xs">
-                    <span className={`font-semibold ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>{item.jabatan}</span>
-                    <span className={`font-mono text-xs ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
-                      <strong className="text-emerald-600 dark:text-emerald-400">{item.terisi}</strong> / {item.total} ({item.percentage}%)
+            {/* Notification Messages */}
+            {passwordSuccessMessage && (
+              <div className="mt-6 p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs flex items-start gap-3">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-bold text-sm">Berhasil Diperbarui!</div>
+                  <div>{passwordSuccessMessage}</div>
+                </div>
+              </div>
+            )}
+
+            {passwordErrorMessage && (
+              <div className="mt-6 p-4 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-bold text-sm">Gagal Mengubah Kata Sandi</div>
+                  <div>{passwordErrorMessage}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Password Form */}
+            <form onSubmit={handleSavePassword} className="mt-6 space-y-5">
+              {/* Current Password */}
+              <div>
+                <label className={`block text-xs font-bold uppercase tracking-wider mb-2 ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+                  Kata Sandi Saat Ini <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showCurrentPassword ? 'text' : 'password'}
+                    value={currentPassword}
+                    onChange={e => setCurrentPassword(e.target.value)}
+                    placeholder="Masukkan kata sandi admin saat ini..."
+                    className={`w-full px-4 py-3 rounded-xl border text-sm transition outline-none pr-11 focus:ring-2 focus:ring-[#0054A6] ${
+                      isLight
+                        ? 'bg-slate-50 border-slate-300 text-slate-900 focus:bg-white placeholder-slate-400'
+                        : 'bg-slate-950 border-slate-700 text-white focus:border-blue-500 placeholder-slate-500'
+                    }`}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                    className="absolute right-3.5 top-3.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    title={showCurrentPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+                  >
+                    {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* New Password */}
+              <div>
+                <label className={`block text-xs font-bold uppercase tracking-wider mb-2 ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+                  Kata Sandi Baru <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
+                    placeholder="Minimal 6 karakter kombinasi..."
+                    className={`w-full px-4 py-3 rounded-xl border text-sm transition outline-none pr-11 focus:ring-2 focus:ring-[#0054A6] ${
+                      isLight
+                        ? 'bg-slate-50 border-slate-300 text-slate-900 focus:bg-white placeholder-slate-400'
+                        : 'bg-slate-950 border-slate-700 text-white focus:border-blue-500 placeholder-slate-500'
+                    }`}
+                    required
+                    minLength={6}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword(!showNewPassword)}
+                    className="absolute right-3.5 top-3.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    title={showNewPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+                  >
+                    {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                {newPassword && (
+                  <div className="mt-1.5 flex items-center gap-2 text-[11px]">
+                    <span className={newPassword.length >= 6 ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-amber-500'}>
+                      {newPassword.length >= 6 ? '✓ Panjang memenuhi syarat (min. 6 karakter)' : '✗ Terlalu pendek (minimal 6 karakter)'}
                     </span>
                   </div>
-                  <div className={`w-full h-2 rounded-full overflow-hidden ${isLight ? 'bg-slate-200' : 'bg-slate-800'}`}>
-                    <div
-                      className="h-full bg-blue-600 rounded-full transition-all duration-500"
-                      style={{ width: `${item.percentage}%` }}
-                    ></div>
-                  </div>
+                )}
+              </div>
+
+              {/* Confirm New Password */}
+              <div>
+                <label className={`block text-xs font-bold uppercase tracking-wider mb-2 ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>
+                  Konfirmasi Kata Sandi Baru <span className="text-rose-500">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={e => setConfirmPassword(e.target.value)}
+                    placeholder="Ulangi kata sandi baru..."
+                    className={`w-full px-4 py-3 rounded-xl border text-sm transition outline-none pr-11 focus:ring-2 focus:ring-[#0054A6] ${
+                      isLight
+                        ? 'bg-slate-50 border-slate-300 text-slate-900 focus:bg-white placeholder-slate-400'
+                        : 'bg-slate-950 border-slate-700 text-white focus:border-blue-500 placeholder-slate-500'
+                    }`}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-3.5 top-3.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    title={showConfirmPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
-              ))}
-            </div>
-          </div>
+                {confirmPassword && (
+                  <div className="mt-1.5 flex items-center gap-2 text-[11px]">
+                    <span className={newPassword === confirmPassword ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-rose-500 font-semibold'}>
+                      {newPassword === confirmPassword ? '✓ Konfirmasi cocok' : '✗ Kata sandi konfirmasi belum cocok'}
+                    </span>
+                  </div>
+                )}
+              </div>
 
-          <div className={`lg:col-span-5 border rounded-2xl p-6 shadow-xl space-y-4 transition-colors ${
-            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-800/90 border-slate-700/80 text-white'
-          }`}>
-            <div className={`flex items-center justify-between pb-3 border-b ${isLight ? 'border-slate-200' : 'border-slate-700/60'}`}>
-              <h2 className={`text-sm font-bold flex items-center gap-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>
-                <Building className="w-4 h-4 text-purple-500" />
-                <span>Leaderboard Unit Toko</span>
-              </h2>
-              <span className={`text-[11px] ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>Peringkat Teratas</span>
-            </div>
-
-            <div className="space-y-2.5 max-h-[480px] overflow-y-auto pr-1">
-              {stats?.topToko.map((toko, idx) => (
-                <div
-                  key={toko.kode_toko}
-                  className={`p-2.5 rounded-lg border flex items-center justify-between text-xs ${
-                    isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-900/60 border-slate-700/40'
+              {/* Buttons */}
+              <div className="pt-4 flex flex-col sm:flex-row items-center justify-end gap-3 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCurrentPassword('');
+                    setNewPassword('');
+                    setConfirmPassword('');
+                    setPasswordErrorMessage('');
+                    setPasswordSuccessMessage('');
+                  }}
+                  className={`w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                    isLight
+                      ? 'border-slate-300 text-slate-700 hover:bg-slate-100'
+                      : 'border-slate-700 text-slate-300 hover:bg-slate-800'
                   }`}
                 >
-                  <div className="flex items-center gap-2.5">
-                    <span className={`w-5 h-5 rounded-full flex items-center justify-center font-mono text-[10px] font-bold ${
-                      isLight ? 'bg-slate-200 text-slate-800' : 'bg-slate-800 text-slate-300'
-                    }`}>
-                      {idx + 1}
-                    </span>
-                    <div>
-                      <div className={`font-semibold truncate max-w-[170px] ${isLight ? 'text-slate-900' : 'text-slate-200'}`}>
-                        {toko.nama_toko}
-                      </div>
-                      <div className={`text-[10px] font-mono ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
-                        Kode: {toko.kode_toko}
-                      </div>
-                    </div>
-                  </div>
+                  Batal / Reset Form
+                </button>
+                <button
+                  type="submit"
+                  disabled={isChangingPassword}
+                  className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-extrabold text-white bg-gradient-to-r from-[#0054A6] to-[#003875] hover:opacity-95 shadow-lg shadow-[#0054A6]/30 flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50"
+                >
+                  {isChangingPassword ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>Menyimpan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4 text-[#FFD100]" />
+                      <span>Simpan Kata Sandi Baru</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
 
-                  <div className="text-right font-mono">
-                    <div className="text-emerald-600 dark:text-emerald-400 font-bold">{toko.percentage}%</div>
-                    <div className={`text-[10px] ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
-                      {toko.terisi}/{toko.total} akun
-                    </div>
-                  </div>
-                </div>
-              ))}
+          {/* Security Notice Card */}
+          <div className={`border rounded-2xl p-5 text-xs space-y-2 transition-colors ${
+            isLight ? 'bg-amber-50/60 border-amber-200 text-amber-900' : 'bg-amber-950/30 border-amber-800/60 text-amber-200'
+          }`}>
+            <div className="flex items-center gap-2 font-bold text-amber-800 dark:text-amber-300">
+              <ShieldCheck className="w-4 h-4" />
+              <span>Informasi Keamanan Administrator</span>
             </div>
+            <ul className="list-disc list-inside space-y-1 text-[11.5px] leading-relaxed opacity-90 pl-1">
+              <li>Perubahan kata sandi akan langsung tersimpan di database lokal sistem.</li>
+              <li>Pastikan mencatat kata sandi baru Anda di tempat yang aman.</li>
+              <li>Akun administrator memiliki akses penuh ke manajemen Akun Pintar, absensi, dan data training seluruh cabang.</li>
+            </ul>
           </div>
         </div>
       )}
@@ -1485,6 +1800,267 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>{isClearingAllAbsensi ? 'Menghapus...' : 'Ya, Hapus Semua Absensi'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DATA PESERTA BELUM ABSEN SESUAI FILTER */}
+      {isBelumAbsenModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className={`border rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden transition-colors ${
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-900 border-slate-700 text-white'
+          }`}>
+            {/* Modal Header */}
+            <div className={`p-5 border-b flex items-start justify-between gap-4 ${
+              isLight ? 'border-slate-200 bg-slate-50' : 'border-slate-800 bg-slate-950/60'
+            }`}>
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-amber-500/20 text-amber-500 border border-amber-500/30 flex items-center justify-center shrink-0">
+                  <UserX className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className={`text-base font-extrabold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                      Daftar Peserta Belum Absen Training
+                    </h3>
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-amber-100 text-amber-900 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-300 dark:border-amber-700">
+                      {belumAbsenData.length} Peserta
+                    </span>
+                  </div>
+                  <p className={`text-xs mt-0.5 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
+                    Data peserta terjadwal yang belum melakukan absensi, otomatis disaring berdasarkan filter aktif di menu absensi.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBelumAbsenModalOpen(false)}
+                className={`p-1.5 rounded-lg border transition cursor-pointer ${
+                  isLight
+                    ? 'border-slate-300 hover:bg-slate-200 text-slate-700'
+                    : 'border-slate-700 hover:bg-slate-800 text-slate-300'
+                }`}
+                title="Tutup"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Active Filters Summary Bar */}
+            <div className={`px-5 py-2.5 border-b flex flex-wrap items-center gap-2 text-xs ${
+              isLight ? 'bg-amber-50/50 border-slate-200 text-slate-700' : 'bg-amber-950/20 border-slate-800 text-slate-300'
+            }`}>
+              <span className="font-bold text-[11px] uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                Filter Aktif:
+              </span>
+              <span className={`px-2 py-0.5 rounded-md border text-[11px] font-medium ${isLight ? 'bg-white border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
+                📅 {absensiTanggalFilter !== 'all' ? absensiTanggalFilter : 'Semua Tanggal'}
+              </span>
+              <span className={`px-2 py-0.5 rounded-md border text-[11px] font-medium ${isLight ? 'bg-white border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
+                📚 {absensiJenisFilter !== 'all' ? absensiJenisFilter : 'Semua Jenis Training'}
+              </span>
+              <span className={`px-2 py-0.5 rounded-md border text-[11px] font-medium ${isLight ? 'bg-white border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
+                🏢 {absensiCabangFilter !== 'all' ? `Cabang ${absensiCabangFilter}` : 'Semua Cabang'}
+              </span>
+              {absensiSearch && (
+                <span className={`px-2 py-0.5 rounded-md border text-[11px] font-medium text-blue-600 dark:text-blue-400 ${isLight ? 'bg-white border-slate-200' : 'bg-slate-800 border-slate-700'}`}>
+                  🔍 "{absensiSearch}"
+                </span>
+              )}
+            </div>
+
+            {/* Action Tools & Search Bar */}
+            <div className={`p-4 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+              isLight ? 'border-slate-200 bg-white' : 'border-slate-800 bg-slate-900/90'
+            }`}>
+              <div className="relative flex-1 max-w-sm">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={belumAbsenModalSearch}
+                  onChange={e => setBelumAbsenModalSearch(e.target.value)}
+                  placeholder="Cari nama, NIK, atau toko di daftar ini..."
+                  className={`w-full pl-8 pr-3 py-1.5 border rounded-lg text-xs font-mono transition focus:outline-none focus:ring-1 focus:ring-amber-500 ${
+                    isLight
+                      ? 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                      : 'bg-slate-950 border-slate-700 text-white placeholder-slate-500'
+                  }`}
+                />
+                {belumAbsenModalSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setBelumAbsenModalSearch('')}
+                    className="absolute right-2.5 top-2 text-slate-400 hover:text-rose-500 text-xs"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleExportBelumAbsenCSV}
+                  disabled={belumAbsenData.length === 0}
+                  className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow"
+                  title="Unduh file CSV berisi seluruh data peserta belum absen"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Unduh CSV</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyWhatsAppFormat}
+                  disabled={belumAbsenData.length === 0}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow border ${
+                    copiedType === 'wa'
+                      ? 'bg-emerald-600 text-white border-emerald-500'
+                      : isLight
+                      ? 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
+                      : 'bg-blue-950 hover:bg-blue-900 text-blue-200 border-blue-800'
+                  }`}
+                  title="Salin teks daftar nama berformat rapi untuk dibagikan ke WhatsApp"
+                >
+                  {copiedType === 'wa' ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedType === 'wa' ? 'Tersalin untuk WA!' : 'Salin Format WA'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyNIKList}
+                  disabled={belumAbsenData.length === 0}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow border ${
+                    copiedType === 'nik'
+                      ? 'bg-emerald-600 text-white border-emerald-500'
+                      : isLight
+                      ? 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                  }`}
+                  title="Salin baris NIK saja"
+                >
+                  {copiedType === 'nik' ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedType === 'nik' ? 'NIK Tersalin!' : 'Salin NIK Saja'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body / Table */}
+            <div className="flex-1 overflow-y-auto max-h-[50vh] p-0">
+              {isLoadingBelumAbsen ? (
+                <div className="py-16 text-center text-slate-400 flex flex-col items-center justify-center gap-2">
+                  <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-xs">Mengambil data peserta belum absen...</span>
+                </div>
+              ) : filteredBelumAbsen.length === 0 ? (
+                <div className="py-16 text-center px-4">
+                  <div className="w-12 h-12 mx-auto rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 flex items-center justify-center mb-2">
+                    <CheckCircle2 className="w-6 h-6" />
+                  </div>
+                  <h4 className={`text-sm font-bold ${isLight ? 'text-slate-800' : 'text-slate-200'}`}>
+                    {belumAbsenData.length === 0
+                      ? 'Seluruh Peserta Telah Melakukan Absensi!'
+                      : 'Tidak Ada Peserta yang Cocok dengan Kata Kunci Pencarian'}
+                  </h4>
+                  <p className={`text-xs mt-1 max-w-md mx-auto ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                    {belumAbsenData.length === 0
+                      ? 'Bagus sekali! Tidak ada peserta yang berstatus belum absen pada filter ini.'
+                      : 'Coba ubah kata kunci pencarian Anda pada kotak input di atas.'}
+                  </p>
+                </div>
+              ) : (
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className={`font-semibold border-b sticky top-0 z-10 ${
+                    isLight ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-slate-950 text-slate-300 border-slate-800'
+                  }`}>
+                    <tr>
+                      <th className="py-2.5 px-3 w-12 text-center">No</th>
+                      <th className="py-2.5 px-3">Karyawan (NIK & Nama)</th>
+                      <th className="py-2.5 px-3">Unit Toko</th>
+                      <th className="py-2.5 px-3">Tanggal Training</th>
+                      <th className="py-2.5 px-3">Jenis Training</th>
+                      <th className="py-2.5 px-3 text-center">Cabang</th>
+                      <th className="py-2.5 px-3 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className={`divide-y ${isLight ? 'divide-slate-200' : 'divide-slate-800'}`}>
+                    {filteredBelumAbsen.map((item, idx) => (
+                      <tr
+                        key={`${item.nik}_${item.tanggal}_${idx}`}
+                        className={`transition-colors ${
+                          isLight ? 'hover:bg-amber-50/50' : 'hover:bg-slate-800/60'
+                        }`}
+                      >
+                        <td className="py-2.5 px-3 text-center font-mono opacity-70">
+                          {idx + 1}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                            {item.nama}
+                          </div>
+                          <div className="flex items-center gap-1.5 text-[11px] font-mono text-blue-600 dark:text-blue-400">
+                            <span>{item.nik}</span>
+                            {item.jabatan && (
+                              <span className={`font-sans text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                                • {item.jabatan}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className={`font-medium ${isLight ? 'text-slate-800' : 'text-slate-200'}`}>
+                            {item.nama_toko || item.kode_toko}
+                          </div>
+                          <div className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                            Kode: {item.kode_toko}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 font-medium whitespace-nowrap">
+                          {item.tanggal}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className="inline-block px-2 py-0.5 rounded text-[10.5px] font-bold bg-blue-50 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                            {item.jenis_training}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="font-mono font-bold text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800">
+                            {item.cabang || 'SBY'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-700 whitespace-nowrap">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                            BELUM ABSEN
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className={`p-4 border-t flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+              isLight ? 'border-slate-200 bg-slate-50 text-slate-700' : 'border-slate-800 bg-slate-950 text-slate-300'
+            }`}>
+              <div>
+                Menampilkan <strong>{filteredBelumAbsen.length}</strong> dari total <strong>{belumAbsenData.length}</strong> peserta belum absen
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBelumAbsenModalOpen(false)}
+                className={`px-5 py-2 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                  isLight
+                    ? 'border-slate-300 hover:bg-slate-200 text-slate-800 bg-white'
+                    : 'border-slate-700 hover:bg-slate-800 text-slate-200 bg-slate-900'
+                }`}
+              >
+                Tutup Jendela
               </button>
             </div>
           </div>

@@ -54627,7 +54627,7 @@
       "cabang": "JAP"
     },
     {
-      "tanggal_awal": "14 Oktober 2026",
+      "tanggal_awal": "07 Oktober 2026",
       "nik": "2015787036",
       "nama": "WINDI VESYA OPPUE",
       "kode_toko": "TP7J",
@@ -54735,11 +54735,11 @@
       "cabang": "JAP"
     },
     {
-      "tanggal_awal": "07 Oktober 2026",
-      "nik": "2015783265",
-      "nama": "NOVALIO RICARDO FAUTNGILYANAN",
-      "kode_toko": "TXX8",
-      "nama_toko": "ENTROP",
+      "tanggal_awal": "14 Oktober 2026",
+      "nik": "2015741613",
+      "nama": "AYU CAHYANI",
+      "kode_toko": "TA2Z",
+      "nama_toko": "BARU PS LAMA",
       "jenis_training": "FRIED FOOD",
       "cabang": "JAP"
     },
@@ -68106,7 +68106,7 @@
       "nama_toko": "IRIAN",
       "as": "RIDO SANTOSO",
       "am": "JARWANTO",
-      "tanggal": "OFFLINE DI TC TGL 14 OKTOBER 2026",
+      "tanggal": "OFFLINE DI TC TGL 46302",
       "jenis_training": "FRIED FOOD",
       "sistem_training": "OFFLINE"
     },
@@ -68243,14 +68243,14 @@
       "sistem_training": "OFFLINE"
     },
     {
-      "nik": "2015783265",
-      "nama": "NOVALIO RICARDO FAUTNGILYANAN",
-      "jabatan": "Store Crew Boy",
-      "kode_toko": "TXX8",
-      "nama_toko": "ENTROP",
+      "nik": "2015741613",
+      "nama": "AYU CAHYANI",
+      "jabatan": "Store Crew Girl",
+      "kode_toko": "TA2Z",
+      "nama_toko": "BARU PS LAMA",
       "as": "EFAN DWI PRASETYO",
       "am": "JARWANTO",
-      "tanggal": "OFFLINE DI TC TGL 07 OKTOBER 2026",
+      "tanggal": "OFFLINE DI TC TGL 46309",
       "jenis_training": "FRIED FOOD",
       "sistem_training": "OFFLINE"
     },
@@ -77632,7 +77632,7 @@
     "tc_t00z48it4xlmuowi3g0": {
       "nik": "ADMIN_TC",
       "role": "admin",
-      "expires": 1793427897986
+      "expires": 1793429016256
     },
     "tc_vmbdciqicmmup5g55a": {
       "nik": "2015779889",
@@ -77642,9 +77642,60 @@
     "tc_1luc2015xt1mup5h0mt": {
       "nik": "2015779889",
       "role": "user",
-      "expires": 1793427926645
+      "expires": 1793427926699
+    },
+    "tc_0pbucxl3yvmlmup6634p": {
+      "nik": "2015707860",
+      "role": "user",
+      "expires": 1793430046156
+    },
+    "tc_hxu66pei7k5mup6tixv": {
+      "nik": "2015707862",
+      "role": "user",
+      "expires": 1793431143485
+    },
+    "tc_2acffeevqxlmup7efp3": {
+      "nik": "ADMIN_TC",
+      "role": "admin",
+      "expires": 1793431509741
+    },
+    "tc_de6u7yuh2amup7mx1x": {
+      "nik": "ADMIN_TC",
+      "role": "admin",
+      "expires": 1793431561173
+    },
+    "tc_m8x4i6q4qpkmup84gjc": {
+      "nik": "2015407784",
+      "role": "user",
+      "expires": 1793432383655
+    },
+    "tc_j3i4yrvcrrmup850j5": {
+      "nik": "ADMIN_TC",
+      "role": "admin",
+      "expires": 1793432425618
+    },
+    "tc_81w8rvh0tthmup8a18h": {
+      "nik": "ADMIN_TC",
+      "role": "admin",
+      "expires": 1793434109781
+    },
+    "tc_hqvl0kcoyztmup95rxa": {
+      "nik": "ADMIN_TC",
+      "role": "admin",
+      "expires": 1793434130686
+    },
+    "tc_jk7u4ukta9mup96631": {
+      "nik": "ADMIN_TC",
+      "role": "admin",
+      "expires": 1793434179060
+    },
+    "tc_d9qaz9vpmemup98y7o": {
+      "nik": "ADMIN_TC",
+      "role": "admin",
+      "expires": 1793434268724
     }
   },
-  "lastSyncedAt": "2026-10-01T06:25:23.230Z",
-  "webhookUrl": "https://script.google.com/macros/s/AKfycbzTYfIFIPwO4iSFE_-TYOcE4jqx7XA_M-WBh59qy8MOsLqNLKFPIf-N10ijaErDYGqE4A/exec"
+  "lastSyncedAt": "2026-10-01T08:11:06.189Z",
+  "webhookUrl": "https://script.google.com/macros/s/AKfycbzTYfIFIPwO4iSFE_-TYOcE4jqx7XA_M-WBh59qy8MOsLqNLKFPIf-N10ijaErDYGqE4A/exec",
+  "adminPassword": "admin123456"
 }

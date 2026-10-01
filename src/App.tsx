@@ -99,9 +99,20 @@ export default function App() {
     const fetchMe = () => {
       api.getMe()
         .then(res => {
-          setCurrentUser(res.user);
-          setCurrentAkunPintar(res.akunPintar);
-          setLastSyncedAt(res.lastSyncedAt);
+          setCurrentUser(prev => {
+            if (!prev && !res.user) return null;
+            if (prev && res.user && prev.nik === res.user.nik && prev.role === res.user.role && prev.nama === res.user.nama) return prev;
+            return res.user;
+          });
+          setCurrentAkunPintar(prev => {
+            if (!prev && !res.akunPintar) return null;
+            if (prev && res.akunPintar && prev.email_pintar === res.akunPintar.email_pintar && prev.password_pintar === res.akunPintar.password_pintar && prev.wa === res.akunPintar.wa) return prev;
+            return res.akunPintar;
+          });
+          setLastSyncedAt(prev => {
+            if (prev === res.lastSyncedAt) return prev;
+            return res.lastSyncedAt;
+          });
         })
         .catch(() => {
           api.clearToken();
@@ -113,8 +124,8 @@ export default function App() {
 
     fetchMe();
 
-    // Auto-refresh every 10 seconds for live synchronization
-    const interval = setInterval(fetchMe, 10000);
+    // Background silent refresh every 30 seconds
+    const interval = setInterval(fetchMe, 30000);
     return () => {
       clearInterval(interval);
       window.removeEventListener('tc_auth_logout', onSessionExpired);

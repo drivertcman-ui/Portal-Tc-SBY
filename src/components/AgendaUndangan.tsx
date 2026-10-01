@@ -779,20 +779,24 @@ export const AgendaUndangan: React.FC<AgendaUndanganProps> = ({
                 <tr className={`border-b text-[10.5px] font-extrabold uppercase tracking-wider ${
                   isLight ? 'bg-slate-100/90 text-slate-700 border-slate-200' : 'bg-slate-950/80 text-slate-400 border-slate-800'
                 }`}>
-                  <th className="py-2.5 px-2 w-[4%] text-center">No</th>
-                  <th className="py-2.5 px-2 w-[24%]">Karyawan (NIK & Nama)</th>
-                  <th className="py-2.5 px-2 w-[15%]">Jabatan</th>
-                  <th className="py-2.5 px-2 w-[20%]">Unit Toko</th>
-                  <th className="py-2.5 px-2 w-[17%]">Jadwal Pelaksanaan</th>
+                  <th className="py-2.5 px-2 w-[3.5%] text-center">No</th>
+                  <th className="py-2.5 px-2 w-[21.5%]">Karyawan (NIK & Nama)</th>
+                  <th className="py-2.5 px-2 w-[11%]">Jabatan</th>
+                  <th className="py-2.5 px-2 w-[18%]">Unit Toko</th>
+                  <th className="py-2.5 px-2 w-[18%]">Jadwal Pelaksanaan</th>
                   <th className="py-2.5 px-2 w-[13%]">Jenis Training</th>
-                  <th className="py-2.5 px-2 w-[7%] text-center">Sistem</th>
+                  <th className="py-2.5 px-2 w-[15%] text-center">Sistem</th>
                 </tr>
               </thead>
               <tbody className={`divide-y ${isLight ? 'divide-slate-200' : 'divide-slate-800/80'}`}>
                 {response.data.map((item, index) => {
                   const isCurrentUser = item.nik === user.nik;
                   const rowNumber = ((page - 1) * limit) + index + 1;
-                  const isOnline = (item.sistem_training || '').toUpperCase().includes('ONLINE');
+                  const rawSistem = (item.sistem_training || 'OFFLINE').trim();
+                  const upperSistem = rawSistem.toUpperCase();
+                  const hasOnline = upperSistem.includes('ONLINE');
+                  const hasOffline = upperSistem.includes('OFFLINE');
+                  const isHybrid = hasOnline && hasOffline;
 
                   return (
                     <tr
@@ -878,15 +882,24 @@ export const AgendaUndangan: React.FC<AgendaUndanganProps> = ({
                         </span>
                       </td>
 
-                      {/* 7. Sistem (Offline / Online) */}
-                      <td className="py-2.5 px-2 text-center overflow-hidden">
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9.5px] font-extrabold uppercase whitespace-nowrap ${
-                          isOnline
-                            ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-300 border border-blue-300 dark:border-blue-700'
-                            : 'bg-amber-100 text-amber-900 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
-                        }`}>
-                          <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-blue-500' : 'bg-amber-500'}`}></span>
-                          {item.sistem_training || 'OFFLINE'}
+                      {/* 7. Sistem (Offline / Online / Hybrid) */}
+                      <td className="py-2.5 px-2 text-center">
+                        <span
+                          className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-full text-[9.5px] font-extrabold uppercase tracking-wide whitespace-nowrap shadow-xs ${
+                            isHybrid
+                              ? 'bg-indigo-100 text-indigo-900 dark:bg-indigo-950/80 dark:text-indigo-200 border border-indigo-300 dark:border-indigo-700'
+                              : hasOnline
+                              ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-300 border border-blue-300 dark:border-blue-700'
+                              : 'bg-amber-100 text-amber-900 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
+                          }`}
+                          title={rawSistem}
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              isHybrid ? 'bg-indigo-600 dark:bg-indigo-400' : hasOnline ? 'bg-blue-500' : 'bg-amber-500'
+                            }`}
+                          ></span>
+                          <span>{rawSistem}</span>
                         </span>
                       </td>
                     </tr>

@@ -86,6 +86,7 @@ interface DatabaseState {
   sessions: Record<string, { nik: string; role: string; expires: number }>;
   lastSyncedAt: string;
   webhookUrl: string;
+  adminPassword?: string;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -106,6 +107,7 @@ const db: DatabaseState = {
   sessions: {},
   lastSyncedAt: '',
   webhookUrl: PERMANENT_APPS_SCRIPT_URL,
+  adminPassword: '',
 };
 
 // Load saved local data if available
@@ -121,6 +123,7 @@ if (fs.existsSync(DATA_FILE)) {
     if (parsed.absensi) db.absensi = parsed.absensi;
     if (parsed.sessions) db.sessions = parsed.sessions;
     if (parsed.lastSyncedAt) db.lastSyncedAt = parsed.lastSyncedAt;
+    if (parsed.adminPassword) db.adminPassword = parsed.adminPassword;
     db.webhookUrl = parsed.webhookUrl || PERMANENT_APPS_SCRIPT_URL;
   } catch (err) {
     console.error('Error reading local db file:', err);
@@ -129,8 +132,23 @@ if (fs.existsSync(DATA_FILE)) {
   db.webhookUrl = PERMANENT_APPS_SCRIPT_URL;
 }
 
-function persistDb() {
+let lastPersistedHash = '';
+function persistDb(force = false) {
   try {
+    const currentHash = JSON.stringify({
+      u: db.users,
+      s: db.stores,
+      t: db.trainings,
+      un: db.undangan,
+      ap: db.akunPintar,
+      ab: db.absensi,
+      pw: db.adminPassword,
+      wh: db.webhookUrl,
+    });
+    if (!force && currentHash === lastPersistedHash) {
+      return; // Data has not changed, do NOT touch disk to avoid triggering watcher or disk churn
+    }
+    lastPersistedHash = currentHash;
     fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2), 'utf-8');
   } catch (err) {
     console.error('Failed to persist db:', err);
@@ -205,7 +223,7 @@ function getIndonesianCurrentTime(): { iso: string; formatted: string } {
 }
 
 // Fetch and sync data directly from Google Sheets
-async function syncFromGoogleSheets(): Promise<{
+async function syncFromGoogleSheets(isSilentAutoSync = false): Promise<{
   success: boolean;
   userCount: number;
   pintarCount: number;
@@ -541,8 +559,19 @@ async function syncFromGoogleSheets(): Promise<{
       console.warn('Undangan sync notice:', e);
     }
 
-    db.lastSyncedAt = new Date().toISOString();
-    persistDb();
+    const hasDataChanged = JSON.stringify({
+      u: db.users,
+      s: db.stores,
+      t: db.trainings,
+      un: db.undangan,
+      ap: db.akunPintar,
+      ab: db.absensi,
+    }) !== lastPersistedHash;
+
+    if (!isSilentAutoSync || hasDataChanged) {
+      db.lastSyncedAt = new Date().toISOString();
+      persistDb();
+    }
 
     const userCount = Object.keys(db.users).length;
     const filledCount = Object.values(db.akunPintar).filter(a => a.email_pintar && a.email_pintar.trim().length > 0).length;
@@ -559,10 +588,10 @@ async function syncFromGoogleSheets(): Promise<{
 // Initial Sync
 syncFromGoogleSheets();
 
-// 10-Second Auto Sync
+// Silent Background Auto Sync (runs quietly behind the scenes every 30s without disk churn or screen flicker)
 setInterval(() => {
-  syncFromGoogleSheets().catch(e => console.error('Live sync failed:', e));
-}, 10000);
+  syncFromGoogleSheets(true).catch(e => console.error('Silent background sync notice:', e));
+}, 30000);
 
 function createSession(nik: string, role: string) {
   const token = 'tc_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
@@ -576,12 +605,17 @@ function createSession(nik: string, role: string) {
 }
 
 function authMiddleware(req: Request, res: Response, next: () => void) {
+  let token = '';
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Akses ditolak. Token otentikasi tidak ditemukan.', code: 'UNAUTHORIZED' });
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.replace('Bearer ', '').trim();
+  } else if (req.query.token) {
+    token = String(req.query.token).trim();
   }
 
-  const token = authHeader.replace('Bearer ', '').trim();
+  if (!token) {
+    return res.status(401).json({ error: 'Akses ditolak. Token otentikasi tidak ditemukan.', code: 'UNAUTHORIZED' });
+  }
   const session = db.sessions[token];
 
   if (!session || session.expires < Date.now()) {
@@ -672,12 +706,23 @@ app.post('/api/auth/login-nik', (req: Request, res: Response) => {
 app.post('/api/auth/login-admin', (req: Request, res: Response) => {
   const { username, password } = req.body;
 
-  const isValidAdmin =
-    (username === 'admin' && password === 'admin123') ||
-    (username === 'admin_tc' && password === 'tc_surabaya_2026') ||
-    (username === 'superadmin' && password === 'surabaya2026');
+  const validUsernames = ['admin', 'admin_tc', 'superadmin'];
+  const isValidUser = validUsernames.includes(String(username).toLowerCase().trim());
 
-  if (!isValidAdmin) {
+  let isPasswordCorrect = false;
+  if (db.adminPassword && db.adminPassword.trim().length > 0) {
+    // If admin has customized their password, ONLY the new password is valid!
+    // The old/default passwords are STRICTLY disabled and cannot be used.
+    isPasswordCorrect = password === db.adminPassword.trim();
+  } else {
+    // Initial default passwords before any password change has been performed
+    isPasswordCorrect =
+      (username === 'admin' && password === 'admin123') ||
+      (username === 'admin_tc' && password === 'tc_surabaya_2026') ||
+      (username === 'superadmin' && password === 'surabaya2026');
+  }
+
+  if (!isValidUser || !isPasswordCorrect) {
     return res.status(401).json({ error: 'Username atau kata sandi Administrator salah.' });
   }
 
@@ -1280,21 +1325,199 @@ app.get('/api/admin/absensi', authMiddleware, (req: Request, res: Response) => {
   });
 });
 
-// 10. Admin: Export Attendance to CSV
+// 10. Admin: Export Attendance to CSV (Supports filters)
 app.get('/api/admin/export-absensi-csv', authMiddleware, (req: Request, res: Response) => {
-  let csv = '"TANGGAL","NIK","NAMA","KODE TOKO","NAMA TOKO","JENIS TRAINING","STATUS","WAKTU ABSEN"\n';
+  const { search = '', tanggal = 'all', jenis_training = 'all', status = 'all', cabang = 'all' } = req.query;
 
-  for (const t of db.trainings) {
+  const searchQuery = String(search).toLowerCase().trim();
+  const tanggalFilter = String(tanggal);
+  const jenisFilter = String(jenis_training);
+  const statusFilter = String(status);
+  const cabangFilter = String(cabang);
+
+  let list = db.trainings.map(t => {
     const absKey = `${t.nik}_${t.tanggal_awal}_${t.jenis_training}`;
     const abs = db.absensi[absKey];
-    const status = abs ? 'HADIR' : 'BELUM HADIR';
-    const waktu = abs?.waktu_formatted || '-';
+    const itemCabang = (t.cabang || db.stores[t.kode_toko]?.wilayah || 'SBY').trim().toUpperCase();
+    return {
+      tanggal: t.tanggal_awal,
+      nik: t.nik,
+      nama: t.nama,
+      kode_toko: t.kode_toko,
+      nama_toko: t.nama_toko,
+      jenis_training: t.jenis_training,
+      cabang: itemCabang,
+      is_hadir: Boolean(abs),
+      waktu_absen: abs?.waktu_formatted || '-',
+    };
+  });
 
-    csv += `"${t.tanggal_awal}","${t.nik}","${t.nama.replace(/"/g, '""')}","${t.kode_toko}","${t.nama_toko.replace(/"/g, '""')}","${t.jenis_training.replace(/"/g, '""')}","${status}","${waktu}"\n`;
+  if (tanggalFilter !== 'all') {
+    list = list.filter(item => item.tanggal === tanggalFilter);
   }
+  if (jenisFilter !== 'all') {
+    list = list.filter(item => item.jenis_training === jenisFilter);
+  }
+  if (cabangFilter !== 'all') {
+    list = list.filter(item => item.cabang.toLowerCase() === cabangFilter.toLowerCase());
+  }
+  if (statusFilter === 'hadir') {
+    list = list.filter(item => item.is_hadir);
+  } else if (statusFilter === 'belum') {
+    list = list.filter(item => !item.is_hadir);
+  }
+  if (searchQuery) {
+    list = list.filter(
+      item =>
+        item.nik.toLowerCase().includes(searchQuery) ||
+        item.nama.toLowerCase().includes(searchQuery) ||
+        item.nama_toko.toLowerCase().includes(searchQuery) ||
+        item.kode_toko.toLowerCase().includes(searchQuery) ||
+        item.jenis_training.toLowerCase().includes(searchQuery) ||
+        item.cabang.toLowerCase().includes(searchQuery)
+    );
+  }
+
+  let csv = '"NO","TANGGAL","NIK","NAMA","KODE TOKO","NAMA TOKO","CABANG","JENIS TRAINING","STATUS","WAKTU ABSEN"\n';
+  list.forEach((t, idx) => {
+    const statText = t.is_hadir ? 'HADIR' : 'BELUM HADIR';
+    csv += `"${idx + 1}","${t.tanggal}","${t.nik}","${t.nama.replace(/"/g, '""')}","${t.kode_toko}","${t.nama_toko.replace(/"/g, '""')}","${t.cabang}","${t.jenis_training.replace(/"/g, '""')}","${statText}","${t.waktu_absen}"\n`;
+  });
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="Rekap_Absensi_Training_${Date.now()}.csv"`);
+  return res.send(csv);
+});
+
+// 10b. Admin: Get List of Participants Not Yet Attended (Belum Absen) According to Active Filters
+app.get('/api/admin/belum-absen', authMiddleware, (req: Request, res: Response) => {
+  const session = (req as any).userSession;
+  if (session.role !== 'admin') {
+    return res.status(403).json({ error: 'Akses khusus administrator TC Surabaya.' });
+  }
+
+  const { search = '', tanggal = 'all', jenis_training = 'all', cabang = 'all' } = req.query;
+
+  const searchQuery = String(search).toLowerCase().trim();
+  const tanggalFilter = String(tanggal);
+  const jenisFilter = String(jenis_training);
+  const cabangFilter = String(cabang);
+
+  let list = db.trainings
+    .map(t => {
+      const absKey = `${t.nik}_${t.tanggal_awal}_${t.jenis_training}`;
+      const abs = db.absensi[absKey];
+      const itemCabang = (t.cabang || db.stores[t.kode_toko]?.wilayah || 'SBY').trim().toUpperCase();
+      const userRecord = db.users[t.nik];
+      return {
+        tanggal: t.tanggal_awal,
+        nik: t.nik,
+        nama: t.nama || userRecord?.nama || '',
+        jabatan: userRecord?.jabatan || '',
+        kode_toko: t.kode_toko,
+        nama_toko: t.nama_toko,
+        jenis_training: t.jenis_training,
+        cabang: itemCabang,
+        is_hadir: Boolean(abs),
+      };
+    })
+    .filter(item => !item.is_hadir);
+
+  if (tanggalFilter !== 'all') {
+    list = list.filter(item => item.tanggal === tanggalFilter);
+  }
+  if (jenisFilter !== 'all') {
+    list = list.filter(item => item.jenis_training === jenisFilter);
+  }
+  if (cabangFilter !== 'all') {
+    list = list.filter(item => item.cabang.toLowerCase() === cabangFilter.toLowerCase());
+  }
+  if (searchQuery) {
+    list = list.filter(
+      item =>
+        item.nik.toLowerCase().includes(searchQuery) ||
+        item.nama.toLowerCase().includes(searchQuery) ||
+        item.nama_toko.toLowerCase().includes(searchQuery) ||
+        item.kode_toko.toLowerCase().includes(searchQuery) ||
+        item.jenis_training.toLowerCase().includes(searchQuery) ||
+        item.cabang.toLowerCase().includes(searchQuery)
+    );
+  }
+
+  return res.json({
+    total: list.length,
+    filters: {
+      search: searchQuery,
+      tanggal: tanggalFilter,
+      jenis_training: jenisFilter,
+      cabang: cabangFilter,
+    },
+    data: list,
+  });
+});
+
+// 10c. Admin: Export Belum Absen to CSV According to Active Filters
+app.get('/api/admin/export-belum-absen-csv', authMiddleware, (req: Request, res: Response) => {
+  const session = (req as any).userSession;
+  if (session.role !== 'admin') {
+    return res.status(403).json({ error: 'Akses khusus administrator TC Surabaya.' });
+  }
+
+  const { search = '', tanggal = 'all', jenis_training = 'all', cabang = 'all' } = req.query;
+
+  const searchQuery = String(search).toLowerCase().trim();
+  const tanggalFilter = String(tanggal);
+  const jenisFilter = String(jenis_training);
+  const cabangFilter = String(cabang);
+
+  let list = db.trainings
+    .map(t => {
+      const absKey = `${t.nik}_${t.tanggal_awal}_${t.jenis_training}`;
+      const abs = db.absensi[absKey];
+      const itemCabang = (t.cabang || db.stores[t.kode_toko]?.wilayah || 'SBY').trim().toUpperCase();
+      const userRecord = db.users[t.nik];
+      return {
+        tanggal: t.tanggal_awal,
+        nik: t.nik,
+        nama: t.nama || userRecord?.nama || '',
+        jabatan: userRecord?.jabatan || '',
+        kode_toko: t.kode_toko,
+        nama_toko: t.nama_toko,
+        jenis_training: t.jenis_training,
+        cabang: itemCabang,
+        is_hadir: Boolean(abs),
+      };
+    })
+    .filter(item => !item.is_hadir);
+
+  if (tanggalFilter !== 'all') {
+    list = list.filter(item => item.tanggal === tanggalFilter);
+  }
+  if (jenisFilter !== 'all') {
+    list = list.filter(item => item.jenis_training === jenisFilter);
+  }
+  if (cabangFilter !== 'all') {
+    list = list.filter(item => item.cabang.toLowerCase() === cabangFilter.toLowerCase());
+  }
+  if (searchQuery) {
+    list = list.filter(
+      item =>
+        item.nik.toLowerCase().includes(searchQuery) ||
+        item.nama.toLowerCase().includes(searchQuery) ||
+        item.nama_toko.toLowerCase().includes(searchQuery) ||
+        item.kode_toko.toLowerCase().includes(searchQuery) ||
+        item.jenis_training.toLowerCase().includes(searchQuery) ||
+        item.cabang.toLowerCase().includes(searchQuery)
+    );
+  }
+
+  let csv = '"NO","NIK","NAMA","JABATAN","KODE TOKO","NAMA TOKO","CABANG","TANGGAL TRAINING","JENIS TRAINING","STATUS"\n';
+  list.forEach((item, idx) => {
+    csv += `"${idx + 1}","${item.nik}","${item.nama.replace(/"/g, '""')}","${item.jabatan.replace(/"/g, '""')}","${item.kode_toko}","${item.nama_toko.replace(/"/g, '""')}","${item.cabang}","${item.tanggal}","${item.jenis_training.replace(/"/g, '""')}","BELUM ABSEN"\n`;
+  });
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="Peserta_Belum_Absen_Training_${Date.now()}.csv"`);
   return res.send(csv);
 });
 
@@ -1477,6 +1700,58 @@ app.get('/api/rekap/stats', (req: Request, res: Response) => {
     webhookUrl: db.webhookUrl || PERMANENT_APPS_SCRIPT_URL,
     jabatanStats,
     topToko: tokoRankings.slice(0, 10),
+  });
+});
+
+// 13b. Change Admin Password
+app.post('/api/admin/change-password', authMiddleware, (req: Request, res: Response) => {
+  const session = (req as any).userSession;
+  if (!session || session.role !== 'admin') {
+    return res.status(403).json({ error: 'Akses ditolak. Hanya Administrator TC Surabaya yang dapat mengubah kata sandi.' });
+  }
+
+  const { currentPassword, newPassword, confirmPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Kata sandi saat ini dan kata sandi baru wajib diisi.' });
+  }
+
+  let isCurrentValid = false;
+  if (db.adminPassword && db.adminPassword.trim().length > 0) {
+    // Must match the current active password only!
+    isCurrentValid = currentPassword === db.adminPassword.trim();
+  } else {
+    // Default initial passwords before any update has occurred
+    isCurrentValid =
+      currentPassword === 'admin123' ||
+      currentPassword === 'tc_surabaya_2026' ||
+      currentPassword === 'surabaya2026';
+  }
+
+  if (!isCurrentValid) {
+    return res.status(400).json({ error: 'Kata sandi saat ini tidak cocok atau salah.' });
+  }
+
+  if (newPassword.trim().length < 6) {
+    return res.status(400).json({ error: 'Kata sandi baru minimal harus 6 karakter.' });
+  }
+
+  if (confirmPassword && newPassword.trim() !== confirmPassword.trim()) {
+    return res.status(400).json({ error: 'Konfirmasi kata sandi baru tidak sesuai.' });
+  }
+
+  const activePass = db.adminPassword && db.adminPassword.trim().length > 0 ? db.adminPassword.trim() : 'admin123';
+  if (newPassword.trim() === activePass) {
+    return res.status(400).json({ error: 'Kata sandi baru tidak boleh sama dengan kata sandi saat ini.' });
+  }
+
+  // Update password in db and persist to disk
+  db.adminPassword = newPassword.trim();
+  persistDb();
+
+  return res.json({
+    success: true,
+    message: 'Kata sandi Administrator berhasil diperbarui! Kata sandi lama telah dinonaktifkan sepenuhnya dan tidak dapat digunakan lagi.',
   });
 });
 
@@ -1782,7 +2057,12 @@ async function startServer() {
 
   if (!isProd) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        watch: {
+          ignored: ['**/data/**', '**/tc_database.json', '**/*.json', '**/dist/**', '**/dist-server/**'],
+        },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

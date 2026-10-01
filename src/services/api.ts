@@ -490,4 +490,59 @@ export const api = {
     }
     return data;
   },
+
+  async changeAdminPassword(payload: {
+    currentPassword: string;
+    newPassword: string;
+    confirmPassword: string;
+  }): Promise<{ success: boolean; message: string }> {
+    const token = this.getToken();
+    if (!token) throw new Error('Token otentikasi tidak ditemukan. Silakan login kembali.');
+
+    const res = await fetch('/api/admin/change-password', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        handleSessionExpired();
+      }
+      throw new Error(data.error || 'Gagal mengubah kata sandi Administrator');
+    }
+    return data;
+  },
+
+  async getBelumAbsenList(params: {
+    search?: string;
+    tanggal?: string;
+    jenis_training?: string;
+    cabang?: string;
+  }): Promise<{ total: number; data: any[]; filters: any }> {
+    const token = this.getToken();
+    if (!token) throw new Error('Token otentikasi tidak ditemukan. Silakan login kembali.');
+
+    const query = new URLSearchParams();
+    if (params.search) query.append('search', params.search);
+    if (params.tanggal && params.tanggal !== 'all') query.append('tanggal', params.tanggal);
+    if (params.jenis_training && params.jenis_training !== 'all') query.append('jenis_training', params.jenis_training);
+    if (params.cabang && params.cabang !== 'all') query.append('cabang', params.cabang);
+
+    const res = await fetch(`/api/admin/belum-absen?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        handleSessionExpired();
+      }
+      throw new Error(data.error || 'Gagal memuat data peserta belum absen');
+    }
+    return data;
+  },
 };
