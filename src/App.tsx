@@ -19,6 +19,60 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
+  // Theme Mode State: 'dark' | 'light' | 'system' (Persisted in localStorage)
+  const [themeMode, setThemeMode] = useState<'dark' | 'light' | 'system'>(() => {
+    try {
+      const saved = localStorage.getItem('tc_theme_mode');
+      return saved === 'light' || saved === 'dark' || saved === 'system' ? saved : 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
+
+  // Effective computed theme ('dark' or 'light')
+  const [effectiveTheme, setEffectiveTheme] = useState<'dark' | 'light'>('dark');
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('tc_theme_mode', themeMode);
+    } catch {}
+
+    const updateEffectiveTheme = () => {
+      let resolved: 'dark' | 'light' = 'dark';
+      if (themeMode === 'system') {
+        resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      } else {
+        resolved = themeMode;
+      }
+      setEffectiveTheme(resolved);
+
+      if (resolved === 'light') {
+        document.documentElement.classList.remove('dark');
+        document.documentElement.classList.add('light');
+      } else {
+        document.documentElement.classList.remove('light');
+        document.documentElement.classList.add('dark');
+      }
+    };
+
+    updateEffectiveTheme();
+
+    if (themeMode === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      const handleChange = () => updateEffectiveTheme();
+      mediaQuery.addEventListener('change', handleChange);
+      return () => mediaQuery.removeEventListener('change', handleChange);
+    }
+  }, [themeMode]);
+
+  const toggleTheme = () => {
+    setThemeMode(prev => {
+      if (prev === 'dark') return 'light';
+      if (prev === 'light') return 'system';
+      return 'dark';
+    });
+  };
+
   const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
     setNotification({ message, type });
     setTimeout(() => {
@@ -104,7 +158,7 @@ export default function App() {
 
   if (isLoadingAuth) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-300">
+      <div className={`min-h-screen flex items-center justify-center ${effectiveTheme === 'light' ? 'bg-slate-100 text-slate-800' : 'bg-slate-950 text-slate-300'}`}>
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
           <span className="text-xs font-mono">Memuat Portal TC Surabaya...</span>
@@ -114,15 +168,15 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
+    <div className={`min-h-screen flex flex-col font-sans transition-colors duration-200 ${effectiveTheme === 'light' ? 'bg-slate-100 text-slate-900' : 'bg-slate-950 text-slate-100'}`}>
       {/* Toast Notification */}
       {notification && (
         <div className="fixed bottom-5 right-5 z-50 animate-bounce">
           <div
-            className={`px-4 py-2.5 rounded-xl shadow-2xl text-xs font-semibold flex items-center gap-2 border ${
+            className={`px-4 py-2.5 rounded-xl shadow-2xl text-xs font-bold flex items-center gap-2 border ${
               notification.type === 'success'
-                ? 'bg-emerald-950/90 text-emerald-300 border-emerald-800'
-                : 'bg-rose-950/90 text-rose-300 border-rose-800'
+                ? 'bg-emerald-900 text-emerald-100 border-emerald-700'
+                : 'bg-rose-900 text-rose-100 border-rose-700'
             }`}
           >
             <span>{notification.message}</span>
@@ -137,33 +191,42 @@ export default function App() {
         lastSyncedAt={lastSyncedAt}
         onSyncClick={currentUser?.role === 'admin' ? handleForceSync : undefined}
         isSyncing={isSyncing}
+        themeMode={effectiveTheme}
+        rawThemeMode={themeMode}
+        onToggleTheme={toggleTheme}
       />
 
       {/* Main Views */}
       <main className="flex-1">
         {!currentUser ? (
-          <LoginPage onLoginSuccess={handleLoginSuccess} />
+          <LoginPage onLoginSuccess={handleLoginSuccess} themeMode={effectiveTheme} />
         ) : currentUser.role === 'user' ? (
           <UserDashboard
             user={currentUser}
             initialAkunPintar={currentAkunPintar}
             onUpdateAkunPintar={handleUpdateAkunPintar}
+            themeMode={effectiveTheme}
           />
         ) : (
           <AdminDashboard
             onForceSync={handleForceSync}
             isSyncing={isSyncing}
+            themeMode={effectiveTheme}
           />
         )}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-800/80 bg-slate-900/60 py-6 text-center text-xs text-slate-400">
+      <footer className={`border-t py-6 text-center text-xs transition-colors ${
+        themeMode === 'light'
+          ? 'border-slate-300 bg-white/80 text-slate-600'
+          : 'border-slate-800/80 bg-slate-950/80 text-slate-400'
+      }`}>
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
             Portal TC Surabaya &copy; {new Date().getFullYear()} - Sistem Pendataan & Sinkronisasi Akun Pintar Karyawan.
           </div>
-          <div className="font-mono text-[11px] text-slate-400">
+          <div className="font-mono text-[11px] font-semibold opacity-80">
             Terhubung ke Google Spreadsheet ID: 1VyP2x_0zRX...
           </div>
         </div>

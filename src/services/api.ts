@@ -6,6 +6,8 @@ import {
   TrainingDateOption,
   CheckParticipantResponse,
   AbsensiRecord,
+  UndanganRecord,
+  UndanganResponse,
 } from '../types';
 
 const TOKEN_KEY = 'portal_tc_token';
@@ -106,6 +108,7 @@ export const api = {
 
   async getTrainingSchedule(): Promise<{
     scheduleOptions: TrainingDateOption[];
+    branchOptions?: string[];
     totalTrainings: number;
     totalAbsensi: number;
   }> {
@@ -195,6 +198,7 @@ export const api = {
     tanggal?: string;
     jenis_training?: string;
     status?: string;
+    cabang?: string;
     page?: number;
     limit?: number;
   }): Promise<{
@@ -205,6 +209,7 @@ export const api = {
       kode_toko: string;
       nama_toko: string;
       jenis_training: string;
+      cabang: string;
       is_hadir: boolean;
       waktu_absen: string;
     }[];
@@ -224,6 +229,7 @@ export const api = {
     if (params.tanggal) query.set('tanggal', params.tanggal);
     if (params.jenis_training) query.set('jenis_training', params.jenis_training);
     if (params.status) query.set('status', params.status);
+    if (params.cabang) query.set('cabang', params.cabang);
     if (params.page) query.set('page', String(params.page));
     if (params.limit) query.set('limit', String(params.limit));
 
@@ -365,5 +371,123 @@ export const api = {
       body: JSON.stringify({ webhookUrl }),
     });
     return res.json();
+  },
+
+  async pushAbsensiToSheet(): Promise<{ success: boolean; message: string; pushedCount: number }> {
+    const token = this.getToken();
+    if (!token) throw new Error('Token tidak ditemukan');
+
+    const res = await fetch('/api/admin/push-absensi-to-sheet', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        handleSessionExpired();
+      }
+      throw new Error(data.error || 'Gagal mengirim absensi ke Google Sheet');
+    }
+    return data;
+  },
+
+  async resetAbsensi(): Promise<{ success: boolean; message: string; totalAbsensi: number }> {
+    const token = this.getToken();
+    if (!token) throw new Error('Token tidak ditemukan');
+
+    const res = await fetch('/api/admin/reset-absensi', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        handleSessionExpired();
+      }
+      throw new Error(data.error || 'Gagal mereset data absensi');
+    }
+    return data;
+  },
+
+  async deleteAdminAbsensiRecord(id: string): Promise<{ success: boolean; message: string; deleted: any }> {
+    const token = this.getToken();
+    if (!token) throw new Error('Token tidak ditemukan');
+
+    const res = await fetch(`/api/admin/absensi/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        handleSessionExpired();
+      }
+      throw new Error(data.error || 'Gagal menghapus data absensi');
+    }
+    return data;
+  },
+
+  async clearAllAbsensiRecords(): Promise<{ success: boolean; message: string; deletedCount: number }> {
+    const token = this.getToken();
+    if (!token) throw new Error('Token tidak ditemukan');
+
+    const res = await fetch('/api/admin/absensi', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        handleSessionExpired();
+      }
+      throw new Error(data.error || 'Gagal menghapus seluruh data absensi');
+    }
+    return data;
+  },
+
+  async getUndangan(params: {
+    search?: string;
+    nik?: string;
+    nama?: string;
+    kode_toko?: string;
+    nama_toko?: string;
+    as?: string;
+    am?: string;
+    jenis_training?: string;
+    sistem_training?: string;
+    tanggal?: string;
+    myOnly?: boolean;
+    page?: number;
+    limit?: number;
+  }): Promise<UndanganResponse> {
+    const token = this.getToken();
+    if (!token) throw new Error('Token tidak ditemukan');
+
+    const query = new URLSearchParams();
+    if (params.search) query.append('search', params.search);
+    if (params.nik) query.append('nik', params.nik);
+    if (params.nama) query.append('nama', params.nama);
+    if (params.kode_toko) query.append('kode_toko', params.kode_toko);
+    if (params.nama_toko) query.append('nama_toko', params.nama_toko);
+    if (params.as && params.as !== 'all') query.append('as', params.as);
+    if (params.am && params.am !== 'all') query.append('am', params.am);
+    if (params.jenis_training && params.jenis_training !== 'all') query.append('jenis_training', params.jenis_training);
+    if (params.sistem_training && params.sistem_training !== 'all') query.append('sistem_training', params.sistem_training);
+    if (params.tanggal && params.tanggal !== 'all') query.append('tanggal', params.tanggal);
+    if (params.myOnly) query.append('myOnly', 'true');
+    if (params.page) query.append('page', String(params.page));
+    if (params.limit) query.append('limit', String(params.limit));
+
+    const res = await fetch(`/api/undangan?${query.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        handleSessionExpired();
+      }
+      throw new Error(data.error || 'Gagal memuat data agenda training sheet Undangan');
+    }
+    return data;
   },
 };

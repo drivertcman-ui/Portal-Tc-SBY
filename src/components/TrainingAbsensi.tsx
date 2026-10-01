@@ -16,14 +16,44 @@ import {
   RefreshCw,
   Info,
   CalendarCheck2,
-  Search,
+  Star,
 } from 'lucide-react';
 
 interface TrainingAbsensiProps {
   user: User;
+  themeMode?: 'dark' | 'light';
 }
 
-export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
+function normalizeDateStr(str: string): string {
+  if (!str) return '';
+  const s = str.replace(/^["']|["']$/g, '').trim().toLowerCase();
+  return s.replace(/^0(\d)\s+/, '$1 ');
+}
+
+// Automatically calculate current running date in Indonesian (WIB / UTC+7)
+function getTanggalBerjalanIndo(): { padded: string; unpadded: string } {
+  const now = new Date();
+  const months = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ];
+  // Calculate based on Indonesian timezone UTC+7 (Asia/Jakarta)
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const indoTime = new Date(utc + 7 * 3600000);
+
+  const day = indoTime.getDate();
+  const month = months[indoTime.getMonth()];
+  const year = indoTime.getFullYear();
+
+  const paddedDay = String(day).padStart(2, '0');
+  return {
+    padded: `${paddedDay} ${month} ${year}`,
+    unpadded: `${day} ${month} ${year}`,
+  };
+}
+
+export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user, themeMode = 'dark' }) => {
+  const isLight = themeMode === 'light';
   const [schedules, setSchedules] = useState<TrainingDateOption[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [selectedJenis, setSelectedJenis] = useState<string>('');
@@ -42,47 +72,71 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
   const [submitSuccess, setSubmitSuccess] = useState('');
   const [submitError, setSubmitError] = useState('');
 
-  const loadSchedules = async () => {
+  const todayInfo = getTanggalBerjalanIndo();
+
+  const loadData = async (forceDateSelect = true) => {
     try {
       setIsLoadingSchedule(true);
-      const res = await api.getTrainingSchedule();
-      setSchedules(res.scheduleOptions);
+      setIsLoadingMySchedules(true);
 
-      // Auto-select date
-      if (res.scheduleOptions.length > 0 && !selectedDate) {
-        // Find if today's date exists or default to first available
-        const todayStr = '29 September 2026'; // current simulation date
-        const matchToday = res.scheduleOptions.find(
-          s => s.tanggal.toLowerCase() === todayStr.toLowerCase()
+      const [scheduleRes, myRes] = await Promise.all([
+        api.getTrainingSchedule(),
+        api.getMyTrainingSchedules(),
+      ]);
+
+      setSchedules(scheduleRes.scheduleOptions);
+      setMySchedules(myRes.mySchedules);
+
+      // Auto-select tanggal berjalan (Today's date)
+      if (scheduleRes.scheduleOptions.length > 0 && forceDateSelect) {
+        const normTodayPadded = normalizeDateStr(todayInfo.padded);
+        const normTodayUnpadded = normalizeDateStr(todayInfo.unpadded);
+
+        // Find today's date in available schedules
+        const matchToday = scheduleRes.scheduleOptions.find(
+          s =>
+            normalizeDateStr(s.tanggal) === normTodayPadded ||
+            normalizeDateStr(s.tanggal) === normTodayUnpadded
         );
+
+        let targetDate = '';
         if (matchToday) {
-          setSelectedDate(matchToday.tanggal);
+          targetDate = matchToday.tanggal;
+        } else if (myRes.mySchedules.length > 0) {
+          targetDate = myRes.mySchedules[0].tanggal;
         } else {
-          setSelectedDate(res.scheduleOptions[0].tanggal);
+          targetDate = scheduleRes.scheduleOptions[0].tanggal;
+        }
+
+        setSelectedDate(targetDate);
+
+        // Check if user has a registered training on this target date
+        const userTraining = myRes.mySchedules.find(
+          m => normalizeDateStr(m.tanggal) === normalizeDateStr(targetDate)
+        );
+
+        if (userTraining) {
+          setSelectedJenis(userTraining.jenis_training);
+          handleSelectTraining(targetDate, userTraining.jenis_training);
+        } else {
+          // If date has training types, check if any matches
+          const dateData = scheduleRes.scheduleOptions.find(s => s.tanggal === targetDate);
+          if (dateData && dateData.jenis_list.length > 0) {
+            setSelectedJenis(dateData.jenis_list[0].jenis_training);
+            handleSelectTraining(targetDate, dateData.jenis_list[0].jenis_training);
+          }
         }
       }
     } catch (err) {
       console.error('Failed to load training schedules:', err);
     } finally {
       setIsLoadingSchedule(false);
-    }
-  };
-
-  const loadMySchedules = async () => {
-    try {
-      setIsLoadingMySchedules(true);
-      const res = await api.getMyTrainingSchedules();
-      setMySchedules(res.mySchedules);
-    } catch (err) {
-      console.error('Failed to load my schedules:', err);
-    } finally {
       setIsLoadingMySchedules(false);
     }
   };
 
   useEffect(() => {
-    loadSchedules();
-    loadMySchedules();
+    loadData(true);
   }, []);
 
   // When date or jenis changes, check participant
@@ -126,9 +180,8 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
           : null
       );
 
-      // Refresh my schedule
-      await loadMySchedules();
-      await loadSchedules();
+      // Refresh schedule data without resetting date
+      await loadData(false);
 
       // Confetti celebration
       try {
@@ -149,40 +202,59 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
   const currentSelectedDateData = schedules.find(s => s.tanggal === selectedDate);
   const availableJenisList = currentSelectedDateData?.jenis_list || [];
 
+  // Check if a specific training type on selectedDate is user's registered training
+  const isUserRegisteredFor = (jenis: string) => {
+    return mySchedules.some(
+      m =>
+        normalizeDateStr(m.tanggal) === normalizeDateStr(selectedDate) &&
+        m.jenis_training.toLowerCase() === jenis.toLowerCase()
+    );
+  };
+
   return (
     <div className="space-y-6">
       {/* Header Banner */}
-      <div className="bg-gradient-to-r from-blue-950 via-slate-900 to-indigo-950 border border-blue-900/60 rounded-2xl p-6 shadow-xl relative overflow-hidden">
+      <div className={`border rounded-2xl p-6 shadow-xl relative overflow-hidden transition-colors ${
+        isLight
+          ? 'bg-gradient-to-r from-blue-50 via-slate-50 to-indigo-50 border-blue-200 text-slate-900'
+          : 'bg-gradient-to-r from-blue-950 via-slate-900 to-indigo-950 border-blue-900/60 text-white'
+      }`}>
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-xl bg-blue-600/30 border border-blue-500/40 flex items-center justify-center text-blue-400 shrink-0">
+            <div className={`w-12 h-12 rounded-xl border flex items-center justify-center shrink-0 ${
+              isLight ? 'bg-blue-100 border-blue-300 text-[#0054A6]' : 'bg-blue-600/30 border-blue-500/40 text-blue-400'
+            }`}>
               <CalendarCheck2 className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-bold text-white tracking-tight">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className={`text-xl font-bold tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>
                   Absensi Kehadiran Training TC Surabaya
                 </h2>
-                <span className="px-2.5 py-0.5 rounded text-[11px] font-mono bg-blue-900/60 text-blue-300 border border-blue-700/50">
+                <span className={`px-2.5 py-0.5 rounded text-[11px] font-mono border ${
+                  isLight ? 'bg-blue-50 border-blue-200 text-[#0054A6]' : 'bg-blue-900/60 border-blue-700/50 text-blue-300'
+                }`}>
                   Sheet: Trainings
                 </span>
+                <span className={`px-2.5 py-0.5 rounded text-[11px] font-mono border flex items-center gap-1 ${
+                  isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-emerald-950/80 border-emerald-800/60 text-emerald-300'
+                }`}>
+                  <Clock className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                  <span>Tanggal Berjalan: {todayInfo.padded}</span>
+                </span>
               </div>
-              <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-                Pilih tanggal dan jenis training yang Anda ikuti. Seluruh data identitas Anda akan terkunci otomatis dan langsung tersinkron ke spreadsheet.
+              <p className={`text-xs mt-1 leading-relaxed ${isLight ? 'text-slate-600' : 'text-slate-300'}`}>
+                Pilih jenis training sesuai jadwal Anda. Seluruh rincian data Anda telah terkunci otomatis dari database sheet <code>Trainings</code>.
               </p>
             </div>
           </div>
 
           <button
-            onClick={() => {
-              loadSchedules();
-              loadMySchedules();
-              if (selectedDate && selectedJenis) {
-                handleSelectTraining(selectedDate, selectedJenis);
-              }
-            }}
+            onClick={() => loadData(true)}
             disabled={isLoadingSchedule}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition cursor-pointer self-start md:self-auto"
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer self-start md:self-auto ${
+              isLight ? 'bg-white hover:bg-slate-100 text-slate-800 border-slate-300' : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+            }`}
             title="Muat ulang jadwal training"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSchedule ? 'animate-spin' : ''}`} />
@@ -193,15 +265,17 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
 
       {/* User's Registered Schedules Quick Card */}
       {mySchedules.length > 0 && (
-        <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-3">
+        <div className={`border rounded-2xl p-5 shadow-xl space-y-3 transition-colors ${
+          isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-800/90 border-slate-700/80 text-white'
+        }`}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <GraduationCap className="w-4 h-4 text-emerald-400" />
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider">
+              <GraduationCap className="w-4 h-4 text-emerald-500" />
+              <h3 className={`text-xs font-bold uppercase tracking-wider ${isLight ? 'text-slate-900' : 'text-white'}`}>
                 Jadwal Training Terdaftar Anda ({mySchedules.length})
               </h3>
             </div>
-            <span className="text-[11px] text-slate-400">Klik untuk langsung absensi</span>
+            <span className={`text-[11px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>Klik kartu untuk langsung absensi</span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
@@ -211,31 +285,47 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
                 type="button"
                 onClick={() => handleSelectTraining(item.tanggal, item.jenis_training)}
                 className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between gap-2 ${
-                  selectedDate === item.tanggal && selectedJenis === item.jenis_training
-                    ? 'bg-blue-950/80 border-blue-500 shadow-md shadow-blue-500/10'
-                    : 'bg-slate-900/80 hover:bg-slate-800/80 border-slate-700/60'
+                  normalizeDateStr(selectedDate) === normalizeDateStr(item.tanggal) &&
+                  selectedJenis.toLowerCase() === item.jenis_training.toLowerCase()
+                    ? 'bg-blue-600 text-white border-blue-500 shadow-md ring-2 ring-blue-400'
+                    : isLight
+                    ? 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-900'
+                    : 'bg-slate-900/80 hover:bg-slate-800/80 border-slate-700/60 text-white'
                 }`}
               >
                 <div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-white">{item.jenis_training}</span>
+                    <span className="text-xs font-bold flex items-center gap-1">
+                      <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+                      <span>{item.jenis_training}</span>
+                    </span>
                     {item.already_attended ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800/50 px-2 py-0.5 rounded">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800/50 px-2 py-0.5 rounded">
                         <CheckCircle2 className="w-2.5 h-2.5" /> Hadir
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-400 bg-amber-950/60 border border-amber-800/50 px-2 py-0.5 rounded">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-800 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800/50 px-2 py-0.5 rounded">
                         <Clock className="w-2.5 h-2.5" /> Belum Absen
                       </span>
                     )}
                   </div>
-                  <div className="text-[11px] text-slate-400 flex items-center gap-1 mt-1 font-mono">
-                    <Calendar className="w-3 h-3 text-blue-400" />
-                    <span>{item.tanggal}</span>
+                  <div className={`text-[11px] flex items-center gap-1 mt-1 font-mono ${
+                    normalizeDateStr(selectedDate) === normalizeDateStr(item.tanggal) &&
+                    selectedJenis.toLowerCase() === item.jenis_training.toLowerCase()
+                      ? 'text-blue-100'
+                      : isLight ? 'text-slate-600' : 'text-slate-300'
+                  }`}>
+                    <Calendar className="w-3 h-3 text-blue-500 dark:text-blue-400" />
+                    <span className="font-semibold">{item.tanggal}</span>
                   </div>
                 </div>
 
-                <div className="text-[10px] text-slate-400 flex items-center gap-1">
+                <div className={`text-[10px] flex items-center gap-1 ${
+                  normalizeDateStr(selectedDate) === normalizeDateStr(item.tanggal) &&
+                  selectedJenis.toLowerCase() === item.jenis_training.toLowerCase()
+                    ? 'text-blue-100'
+                    : isLight ? 'text-slate-500' : 'text-slate-400'
+                }`}>
                   <Building2 className="w-3 h-3" />
                   <span>{item.kode_toko} / {item.nama_toko}</span>
                 </div>
@@ -249,72 +339,121 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Step 1 & 2: Pilih Tanggal & Jenis Training */}
         <div className="lg:col-span-5 space-y-4">
-          <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className={`border rounded-2xl p-5 shadow-xl space-y-4 transition-colors ${
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-800/90 border-slate-700/80 text-white'
+          }`}>
+            {/* Step 1: Otomatis membaca tanggal berjalan */}
             <div>
-              <label className="block text-xs font-semibold text-slate-200 mb-1.5 flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                <span>1. Pilih Tanggal Training Berjalan</span>
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className={`text-xs font-semibold flex items-center gap-1.5 ${isLight ? 'text-slate-800' : 'text-slate-200'}`}>
+                  <Calendar className="w-3.5 h-3.5 text-blue-500" />
+                  <span>1. Tanggal Training Berjalan</span>
+                </label>
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                  isLight ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-emerald-950/60 text-emerald-400 border-emerald-800/50'
+                }`}>
+                  Otomatis: {todayInfo.padded}
+                </span>
+              </div>
               <select
                 value={selectedDate}
                 onChange={e => {
-                  setSelectedDate(e.target.value);
-                  setSelectedJenis('');
-                  setCheckResult(null);
+                  const newDate = e.target.value;
+                  setSelectedDate(newDate);
+                  const dateObj = schedules.find(s => s.tanggal === newDate);
+                  if (dateObj && dateObj.jenis_list.length > 0) {
+                    // Check if user has a registered training on this newDate
+                    const userMatch = mySchedules.find(
+                      m => normalizeDateStr(m.tanggal) === normalizeDateStr(newDate)
+                    );
+                    const defaultJenis = userMatch ? userMatch.jenis_training : dateObj.jenis_list[0].jenis_training;
+                    setSelectedJenis(defaultJenis);
+                    handleSelectTraining(newDate, defaultJenis);
+                  } else {
+                    setSelectedJenis('');
+                    setCheckResult(null);
+                  }
                 }}
-                className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-semibold text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                className={`w-full px-3.5 py-2.5 border rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#0054A6] cursor-pointer transition ${
+                  isLight ? 'bg-slate-50 border-slate-300 text-slate-900' : 'bg-slate-900 border-slate-700 text-white'
+                }`}
               >
-                {schedules.map(s => (
-                  <option key={s.tanggal} value={s.tanggal}>
-                    {s.tanggal} ({s.total_peserta} Peserta Terjadwal)
-                  </option>
-                ))}
+                {schedules.map(s => {
+                  const isToday =
+                    normalizeDateStr(s.tanggal) === normalizeDateStr(todayInfo.padded) ||
+                    normalizeDateStr(s.tanggal) === normalizeDateStr(todayInfo.unpadded);
+                  return (
+                    <option key={s.tanggal} value={s.tanggal}>
+                      {s.tanggal} {isToday ? '★ (Hari Ini)' : ''} ({s.total_peserta} Peserta Terjadwal)
+                    </option>
+                  );
+                })}
               </select>
             </div>
 
+            {/* Step 2: Pilih Jenis Training */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
-                  <GraduationCap className="w-3.5 h-3.5 text-blue-400" />
+                <label className={`text-xs font-semibold flex items-center gap-1.5 ${isLight ? 'text-slate-800' : 'text-slate-200'}`}>
+                  <GraduationCap className="w-3.5 h-3.5 text-blue-500" />
                   <span>2. Pilih Jenis Training ({availableJenisList.length})</span>
                 </label>
-                <span className="text-[10px] text-slate-400">Klik jenis training</span>
+                <span className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>Klik untuk absensi</span>
               </div>
 
               {availableJenisList.length === 0 ? (
-                <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-700/40 text-center text-xs text-slate-400">
+                <div className={`p-4 rounded-xl border text-center text-xs ${
+                  isLight ? 'bg-slate-50 border-slate-200 text-slate-600' : 'bg-slate-900/60 border-slate-700/40 text-slate-400'
+                }`}>
                   Tidak ada jenis training yang terdaftar pada tanggal ini.
                 </div>
               ) : (
                 <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
-                  {availableJenisList.map(item => (
-                    <button
-                      key={item.jenis_training}
-                      type="button"
-                      onClick={() => handleSelectTraining(selectedDate, item.jenis_training)}
-                      className={`w-full p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between ${
-                        selectedJenis === item.jenis_training
-                          ? 'bg-blue-600 text-white border-blue-500 shadow-md'
-                          : 'bg-slate-900/80 hover:bg-slate-700/50 text-slate-200 border-slate-700/50'
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold text-xs">{item.jenis_training}</div>
-                        <div
-                          className={`text-[10px] font-mono mt-0.5 ${
-                            selectedJenis === item.jenis_training ? 'text-blue-100' : 'text-slate-400'
-                          }`}
-                        >
-                          {item.total_peserta} Peserta Terdaftar
-                        </div>
-                      </div>
-                      <ChevronRight
-                        className={`w-4 h-4 ${
-                          selectedJenis === item.jenis_training ? 'text-white' : 'text-slate-500'
+                  {availableJenisList.map(item => {
+                    const isSelected = selectedJenis.toLowerCase() === item.jenis_training.toLowerCase();
+                    const isUserRegistered = isUserRegisteredFor(item.jenis_training);
+
+                    return (
+                      <button
+                        key={item.jenis_training}
+                        type="button"
+                        onClick={() => handleSelectTraining(selectedDate, item.jenis_training)}
+                        className={`w-full p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between ${
+                          isSelected
+                            ? 'bg-blue-600 text-white border-blue-500 shadow-md ring-2 ring-blue-400'
+                            : isUserRegistered
+                            ? isLight ? 'bg-emerald-50 hover:bg-emerald-100 border-emerald-300 text-emerald-900' : 'bg-emerald-950/40 hover:bg-emerald-900/40 border-emerald-700/60 text-emerald-200'
+                            : isLight ? 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200' : 'bg-slate-900/80 hover:bg-slate-700/50 text-slate-200 border-slate-700/50'
                         }`}
-                      />
-                    </button>
-                  ))}
+                      >
+                        <div>
+                          <div className="font-bold text-xs flex items-center gap-1.5">
+                            {isUserRegistered && (
+                              <Star className={`w-3 h-3 ${isSelected ? 'text-amber-300 fill-amber-300' : 'text-amber-500 fill-amber-500'}`} />
+                            )}
+                            <span>{item.jenis_training}</span>
+                          </div>
+                          <div
+                            className={`text-[10px] font-mono mt-0.5 flex items-center gap-2 ${
+                              isSelected ? 'text-blue-100' : isLight ? 'text-slate-600' : 'text-slate-400'
+                            }`}
+                          >
+                            <span>{item.total_peserta} Peserta Terdaftar</span>
+                            {isUserRegistered && (
+                              <span className={`font-semibold ${isSelected ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                • Anda Terdaftar
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <ChevronRight
+                          className={`w-4 h-4 ${
+                            isSelected ? 'text-white' : isLight ? 'text-slate-400' : 'text-slate-500'
+                          }`}
+                        />
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -323,31 +462,35 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
 
         {/* Step 3: Verifikasi Kepesertaan & Formulir Hadir Absensi */}
         <div className="lg:col-span-7">
-          <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-xl space-y-5">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-700/60">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-blue-400" />
+          <div className={`border rounded-2xl p-6 shadow-xl space-y-5 transition-colors ${
+            isLight ? 'bg-white border-slate-200 text-slate-900' : 'bg-slate-800/90 border-slate-700/80 text-white'
+          }`}>
+            <div className={`flex items-center justify-between pb-3 border-b ${isLight ? 'border-slate-200' : 'border-slate-700/60'}`}>
+              <h3 className={`text-sm font-bold flex items-center gap-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                <Sparkles className="w-4 h-4 text-blue-500" />
                 <span>Status Kepesertaan & Form Hadir Absensi</span>
               </h3>
               {selectedDate && (
-                <span className="text-[11px] font-mono text-slate-400">
+                <span className={`text-[11px] font-mono px-2.5 py-1 rounded-lg border ${
+                  isLight ? 'bg-slate-100 border-slate-300 text-slate-800' : 'bg-slate-900 border-slate-700 text-slate-300'
+                }`}>
                   {selectedDate}
                 </span>
               )}
             </div>
 
             {!selectedJenis ? (
-              <div className="py-12 px-4 text-center text-slate-400 space-y-2">
-                <GraduationCap className="w-10 h-10 mx-auto text-slate-600 animate-pulse" />
-                <div className="text-sm font-semibold text-slate-300">
+              <div className={`py-12 px-4 text-center space-y-2 ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>
+                <GraduationCap className="w-10 h-10 mx-auto text-slate-400 animate-pulse" />
+                <div className={`text-sm font-semibold ${isLight ? 'text-slate-800' : 'text-slate-300'}`}>
                   Silakan Pilih Jenis Training di Panel Kiri
                 </div>
-                <p className="text-xs max-w-sm mx-auto text-slate-400">
+                <p className={`text-xs max-w-sm mx-auto ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                   Sistem akan secara otomatis memverifikasi apakah Anda terdaftar sebagai peserta training pada tanggal dan jenis training tersebut.
                 </p>
               </div>
             ) : isChecking ? (
-              <div className="py-12 text-center text-slate-400 space-y-2">
+              <div className={`py-12 text-center space-y-2 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                 <span className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin inline-block"></span>
                 <div className="text-xs font-mono">Memverifikasi kepesertaan NIK: {user.nik}...</div>
               </div>
@@ -356,26 +499,26 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
               <div className="space-y-4 animate-fade-in">
                 {/* Status Badge */}
                 {checkResult.already_attended ? (
-                  <div className="p-3.5 rounded-xl bg-emerald-950/70 border border-emerald-800/70 text-emerald-300 text-xs flex items-center justify-between">
+                  <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-800/70 text-emerald-900 dark:text-emerald-300 text-xs flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                       <div>
                         <div className="font-bold">✓ Absensi Kehadiran Terverifikasi</div>
-                        <div className="text-[11px] text-emerald-300/80">
+                        <div className="text-[11px] opacity-90">
                           {checkResult.absensi?.waktu_formatted || 'Tersinkron di Spreadsheet'}
                         </div>
                       </div>
                     </div>
-                    <span className="font-mono text-[10px] bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-700/50">
+                    <span className="font-mono text-[10px] bg-emerald-100 dark:bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-300 dark:border-emerald-700/50 font-bold">
                       STATUS: HADIR
                     </span>
                   </div>
                 ) : (
-                  <div className="p-3.5 rounded-xl bg-blue-950/60 border border-blue-800/60 text-blue-200 text-xs flex items-center gap-2">
-                    <UserCheck className="w-5 h-5 text-blue-400 shrink-0" />
+                  <div className="p-3.5 rounded-xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800/60 text-blue-900 dark:text-blue-200 text-xs flex items-center gap-2">
+                    <UserCheck className="w-5 h-5 text-[#0054A6] dark:text-blue-400 shrink-0" />
                     <div>
                       <div className="font-bold">Peserta Terdaftar Terverifikasi</div>
-                      <div className="text-[11px] text-blue-300/80">
+                      <div className="text-[11px] opacity-90">
                         Rincian data Anda telah terkunci otomatis. Klik tombol Hadir Absensi di bawah untuk mencatat kehadiran.
                       </div>
                     </div>
@@ -383,22 +526,28 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
                 )}
 
                 {/* FORMULIR RINCIAN DATA PESERTA (SEMUANYA TERKUNCI / READ-ONLY) */}
-                <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-700/60 space-y-3 text-xs">
-                  <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400 border-b border-slate-800 pb-2">
-                    <span className="flex items-center gap-1.5 text-slate-300">
-                      <Lock className="w-3.5 h-3.5 text-amber-400" />
+                <div className={`p-4 rounded-xl border space-y-3 text-xs ${
+                  isLight ? 'bg-slate-50 border-slate-200' : 'bg-slate-900/80 border-slate-700/60'
+                }`}>
+                  <div className={`flex items-center justify-between text-[11px] font-semibold border-b pb-2 ${
+                    isLight ? 'border-slate-200 text-slate-600' : 'border-slate-800 text-slate-400'
+                  }`}>
+                    <span className="flex items-center gap-1.5 font-bold">
+                      <Lock className="w-3.5 h-3.5 text-amber-500" />
                       <span>RINCIAN DATA PESERTA (TERKUNCI OTOMATIS)</span>
                     </span>
-                    <span className="text-[10px] text-slate-400 font-mono">Terkunci</span>
+                    <span className="text-[10px] font-mono">Terkunci</span>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                     {/* 1. NIK */}
                     <div>
-                      <label className="block text-[11px] text-slate-400 font-medium mb-1">
+                      <label className={`block text-[11px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                         Nomor Induk Karyawan (NIK)
                       </label>
-                      <div className="px-3 py-2 bg-slate-800/80 border border-slate-700 rounded-lg font-mono font-bold text-white flex items-center justify-between">
+                      <div className={`px-3 py-2 border rounded-lg font-mono font-bold flex items-center justify-between ${
+                        isLight ? 'bg-white border-slate-300 text-slate-900' : 'bg-slate-800/80 border-slate-700 text-white'
+                      }`}>
                         <span>{checkResult.training.nik}</span>
                         <Lock className="w-3 h-3 text-slate-400" />
                       </div>
@@ -406,10 +555,12 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
 
                     {/* 2. Nama */}
                     <div>
-                      <label className="block text-[11px] text-slate-400 font-medium mb-1">
+                      <label className={`block text-[11px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                         Nama Peserta
                       </label>
-                      <div className="px-3 py-2 bg-slate-800/80 border border-slate-700 rounded-lg font-semibold text-slate-200 truncate flex items-center justify-between">
+                      <div className={`px-3 py-2 border rounded-lg font-semibold truncate flex items-center justify-between ${
+                        isLight ? 'bg-white border-slate-300 text-slate-900' : 'bg-slate-800/80 border-slate-700 text-slate-200'
+                      }`}>
                         <span className="truncate">{checkResult.training.nama}</span>
                         <Lock className="w-3 h-3 text-slate-400 shrink-0 ml-1" />
                       </div>
@@ -417,10 +568,12 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
 
                     {/* 3. Kode Toko */}
                     <div>
-                      <label className="block text-[11px] text-slate-400 font-medium mb-1">
+                      <label className={`block text-[11px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                         Kode Toko
                       </label>
-                      <div className="px-3 py-2 bg-slate-800/80 border border-slate-700 rounded-lg font-mono font-bold text-blue-400 flex items-center justify-between">
+                      <div className={`px-3 py-2 border rounded-lg font-mono font-bold flex items-center justify-between ${
+                        isLight ? 'bg-white border-slate-300 text-[#0054A6]' : 'bg-slate-800/80 border-slate-700 text-blue-400'
+                      }`}>
                         <span>{checkResult.training.kode_toko}</span>
                         <Lock className="w-3 h-3 text-slate-400" />
                       </div>
@@ -428,10 +581,12 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
 
                     {/* 4. Nama Toko */}
                     <div>
-                      <label className="block text-[11px] text-slate-400 font-medium mb-1">
+                      <label className={`block text-[11px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                         Nama Toko / Unit
                       </label>
-                      <div className="px-3 py-2 bg-slate-800/80 border border-slate-700 rounded-lg font-medium text-slate-200 truncate flex items-center justify-between">
+                      <div className={`px-3 py-2 border rounded-lg font-medium truncate flex items-center justify-between ${
+                        isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-slate-800/80 border-slate-700 text-slate-200'
+                      }`}>
                         <span className="truncate">{checkResult.training.nama_toko}</span>
                         <Lock className="w-3 h-3 text-slate-400 shrink-0 ml-1" />
                       </div>
@@ -439,10 +594,12 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
 
                     {/* 5. Tanggal Training */}
                     <div>
-                      <label className="block text-[11px] text-slate-400 font-medium mb-1">
+                      <label className={`block text-[11px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                         Tanggal Training
                       </label>
-                      <div className="px-3 py-2 bg-slate-800/80 border border-slate-700 rounded-lg font-medium text-slate-200 flex items-center justify-between">
+                      <div className={`px-3 py-2 border rounded-lg font-medium flex items-center justify-between ${
+                        isLight ? 'bg-white border-slate-300 text-slate-800' : 'bg-slate-800/80 border-slate-700 text-slate-200'
+                      }`}>
                         <span>{checkResult.training.tanggal}</span>
                         <Lock className="w-3 h-3 text-slate-400" />
                       </div>
@@ -450,10 +607,12 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
 
                     {/* 6. Jenis Training */}
                     <div>
-                      <label className="block text-[11px] text-slate-400 font-medium mb-1">
+                      <label className={`block text-[11px] font-medium mb-1 ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                         Jenis Training
                       </label>
-                      <div className="px-3 py-2 bg-slate-800/80 border border-slate-700 rounded-lg font-bold text-white truncate flex items-center justify-between">
+                      <div className={`px-3 py-2 border rounded-lg font-bold truncate flex items-center justify-between ${
+                        isLight ? 'bg-white border-slate-300 text-slate-900' : 'bg-slate-800/80 border-slate-700 text-white'
+                      }`}>
                         <span className="truncate">{checkResult.training.jenis_training}</span>
                         <Lock className="w-3 h-3 text-slate-400 shrink-0 ml-1" />
                       </div>
@@ -476,7 +635,7 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
                   </div>
                 )}
 
-                {/* TOMBOL AKSI: HADIR ABSENSI (HANYA INI YANG BISA DIKLIK PESERTA) */}
+                {/* TOMBOL AKSI: HADIR ABSENSI */}
                 {!checkResult.already_attended ? (
                   <button
                     type="button"
@@ -497,11 +656,13 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
                     )}
                   </button>
                 ) : (
-                  <div className="p-3 bg-slate-900 rounded-xl border border-slate-700/60 text-center text-xs text-slate-300 space-y-1">
-                    <div className="font-semibold text-emerald-400">
+                  <div className={`p-3 rounded-xl border text-center text-xs space-y-1 ${
+                    isLight ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-slate-900 border-slate-700/60 text-slate-300'
+                  }`}>
+                    <div className="font-semibold text-emerald-600 dark:text-emerald-400">
                       ✓ Anda telah berhasil melakukan absensi untuk sesi training ini.
                     </div>
-                    <div className="text-[11px] text-slate-400">
+                    <div className={`text-[11px] ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                       Data kehadiran telah dicatat dan terkirim ke spreadsheet Training Center Surabaya.
                     </div>
                   </div>
@@ -509,14 +670,16 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
               </div>
             ) : (
               /* KASUS 2: USER BUKAN PESERTA TERDAFTAR */
-              <div className="p-5 rounded-2xl bg-amber-950/40 border border-amber-800/60 text-amber-300 text-xs space-y-3 animate-fade-in">
+              <div className={`p-5 rounded-2xl border text-xs space-y-3 animate-fade-in ${
+                isLight ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-amber-950/40 border-amber-800/60 text-amber-300'
+              }`}>
                 <div className="flex items-start gap-3">
-                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                  <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
                   <div>
-                    <h4 className="font-bold text-sm text-white">
+                    <h4 className={`font-bold text-sm ${isLight ? 'text-slate-900' : 'text-white'}`}>
                       Bukan Peserta Terdaftar pada Jadwal Ini
                     </h4>
-                    <p className="mt-1 text-amber-200/90 leading-relaxed">
+                    <p className="mt-1 leading-relaxed opacity-90">
                       {checkResult?.message ||
                         `NIK ${user.nik} (${user.nama}) tidak terdaftar sebagai peserta training "${selectedJenis}" pada tanggal "${selectedDate}".`}
                     </p>
@@ -524,9 +687,9 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
                 </div>
 
                 {checkResult?.user_other_schedules && checkResult.user_other_schedules.length > 0 ? (
-                  <div className="pt-3 border-t border-amber-800/40 space-y-2">
-                    <div className="font-semibold text-white flex items-center gap-1.5 text-[11px]">
-                      <Info className="w-3.5 h-3.5 text-amber-400" />
+                  <div className="pt-3 border-t border-amber-200 dark:border-amber-800/40 space-y-2">
+                    <div className={`font-semibold flex items-center gap-1.5 text-[11px] ${isLight ? 'text-slate-900' : 'text-white'}`}>
+                      <Info className="w-3.5 h-3.5 text-amber-500" />
                       <span>Jadwal Training Anda Terdaftar Pada:</span>
                     </div>
                     <div className="space-y-1.5">
@@ -535,19 +698,23 @@ export const TrainingAbsensi: React.FC<TrainingAbsensiProps> = ({ user }) => {
                           key={idx}
                           type="button"
                           onClick={() => handleSelectTraining(sc.tanggal, sc.jenis_training)}
-                          className="w-full text-left p-2.5 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-[11px] text-slate-200 border border-slate-700/60 flex items-center justify-between transition cursor-pointer"
+                          className={`w-full text-left p-2.5 rounded-lg text-[11px] border flex items-center justify-between transition cursor-pointer ${
+                            isLight
+                              ? 'bg-white hover:bg-slate-100 text-slate-800 border-slate-200'
+                              : 'bg-slate-900/80 hover:bg-slate-800 text-slate-200 border-slate-700/60'
+                          }`}
                         >
                           <div>
-                            <span className="font-bold text-white">{sc.jenis_training}</span>
-                            <span className="text-slate-400 ml-2 font-mono">({sc.tanggal})</span>
+                            <span className={`font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{sc.jenis_training}</span>
+                            <span className="text-slate-500 ml-2 font-mono">({sc.tanggal})</span>
                           </div>
-                          <span className="text-blue-400 font-semibold text-[10px]">Pilih Jadwal Ini →</span>
+                          <span className="text-[#0054A6] dark:text-blue-400 font-semibold text-[10px]">Pilih Jadwal Ini →</span>
                         </button>
                       ))}
                     </div>
                   </div>
                 ) : (
-                  <div className="pt-2 text-[11px] text-slate-400">
+                  <div className={`pt-2 text-[11px] ${isLight ? 'text-slate-600' : 'text-slate-400'}`}>
                     Jika Anda ditugaskan mengikuti training ini, silakan hubungi tim Administrator atau PIC Training Center Surabaya.
                   </div>
                 )}

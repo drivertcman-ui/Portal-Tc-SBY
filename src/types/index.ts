@@ -118,3 +118,40 @@ export interface EmployeeListItem {
   is_filled: boolean;
   updated_at?: string;
 }
+
+export interface UndanganRecord {
+  nik: string;
+  nama: string;
+  jabatan: string;
+  kode_toko: string;
+  nama_toko: string;
+  as: string;
+  am: string;
+  tanggal: string;
+  jenis_training: string;
+  sistem_training: string;
+}
+
+export interface UndanganResponse {
+  data: UndanganRecord[];
+  pagination: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  };
+  filterOptions: {
+    asOptions: string[];
+    amOptions: string[];
+    jenisOptions: string[];
+    sistemOptions: string[];
+    tanggalOptions: string[];
+  };
+  summary: {
+    totalPeserta: number;
+    totalToko: number;
+    totalAS: number;
+    totalAM: number;
+    myTotal: number;
+  };
+}

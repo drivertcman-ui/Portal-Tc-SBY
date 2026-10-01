@@ -92,6 +92,54 @@ function doPost(e) {
       return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "submit_absensi", nik: data.nik }))
         .setMimeType(ContentService.MimeType.JSON);
     }
+
+    // 3. HAPUS DATA ABSENSI KEHADIRAN TRAINING (SINGLE / BULK)
+    if (action === "delete_absensi") {
+      var sheetAbs = ss.getSheetByName("Absensi");
+      if (!sheetAbs) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "delete_absensi", message: "Sheet Absensi belum ada" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      
+      // Hapus seluruh data absensi (Bulk Clear)
+      if (payload.clear_all === true || (data && data.clear_all === true)) {
+        var lastRow = sheetAbs.getLastRow();
+        if (lastRow > 1) {
+          sheetAbs.getRange(2, 1, lastRow - 1, sheetAbs.getLastColumn()).clearContent();
+        }
+        return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "delete_all_absensi" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      
+      // Hapus data absensi per peserta (Single Row Delete)
+      if (data && data.nik) {
+        var dataRange = sheetAbs.getDataRange();
+        var values = dataRange.getValues();
+        var deletedCount = 0;
+        
+        for (var i = values.length - 1; i >= 1; i--) {
+          var rowNik = String(values[i][1]).trim();
+          var rowTgl = String(values[i][0]).trim();
+          var rowJenis = String(values[i][5]).trim();
+          
+          var targetNik = String(data.nik).trim();
+          var targetTgl = data.tanggal ? String(data.tanggal).trim() : "";
+          var targetJenis = data.jenis_training ? String(data.jenis_training).trim().toLowerCase() : "";
+          
+          var matchNik = rowNik === targetNik;
+          var matchTgl = !targetTgl || rowTgl === targetTgl;
+          var matchJenis = !targetJenis || rowJenis.toLowerCase() === targetJenis;
+          
+          if (matchNik && matchTgl && matchJenis) {
+            sheetAbs.deleteRow(i + 1);
+            deletedCount++;
+          }
+        }
+        
+        return ContentService.createTextOutput(JSON.stringify({ status: "success", action: "delete_absensi", nik: data.nik, deletedCount: deletedCount }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
     
     return ContentService.createTextOutput(JSON.stringify({ status: "ignored" }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -123,8 +171,12 @@ function doPost(e) {
       <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl space-y-5">
         <div className="flex items-center justify-between pb-3 border-b border-slate-800">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-blue-600/20 text-blue-400 flex items-center justify-center">
-              <Code2 className="w-4 h-4" />
+            <div className="h-8 px-2 py-0.5 rounded-lg bg-white flex items-center justify-center border border-slate-200 shadow-sm shrink-0">
+              <img
+                src="https://upload.wikimedia.org/wikipedia/commons/4/44/Indomaret.svg"
+                alt="Indomaret Logo"
+                className="h-5 w-auto object-contain"
+              />
             </div>
             <div>
               <h3 className="text-base font-bold text-white">
@@ -137,7 +189,7 @@ function doPost(e) {
           </div>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-1 rounded-lg text-sm"
+            className="text-slate-400 hover:text-white p-1 rounded-lg text-sm cursor-pointer"
           >
             ✕
           </button>

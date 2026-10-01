@@ -34,6 +34,7 @@ export interface TrainingRecord {
   kode_toko: string;
   nama_toko: string;
   jenis_training: string;
+  cabang?: string;
 }
 
 export interface AkunPintarRecord {
@@ -55,16 +56,31 @@ export interface AbsensiRecord {
   kode_toko: string;
   nama_toko: string;
   jenis_training: string;
+  cabang?: string;
   waktu_absen: string;
   waktu_formatted: string;
   status: 'HADIR';
   synced_to_sheet?: boolean;
 }
 
+export interface UndanganRecord {
+  nik: string;
+  nama: string;
+  jabatan: string;
+  kode_toko: string;
+  nama_toko: string;
+  as: string;
+  am: string;
+  tanggal: string;
+  jenis_training: string;
+  sistem_training: string;
+}
+
 interface DatabaseState {
   users: Record<string, UserRecord>;
   stores: Record<string, StoreRecord>;
   trainings: TrainingRecord[];
+  undangan: UndanganRecord[];
   akunPintar: Record<string, AkunPintarRecord>;
   absensi: Record<string, AbsensiRecord>;
   sessions: Record<string, { nik: string; role: string; expires: number }>;
@@ -84,6 +100,7 @@ const db: DatabaseState = {
   users: {},
   stores: {},
   trainings: [],
+  undangan: [],
   akunPintar: {},
   absensi: {},
   sessions: {},
@@ -99,6 +116,7 @@ if (fs.existsSync(DATA_FILE)) {
     if (parsed.users) db.users = parsed.users;
     if (parsed.stores) db.stores = parsed.stores;
     if (parsed.trainings) db.trainings = parsed.trainings;
+    if (parsed.undangan) db.undangan = parsed.undangan;
     if (parsed.akunPintar) db.akunPintar = parsed.akunPintar;
     if (parsed.absensi) db.absensi = parsed.absensi;
     if (parsed.sessions) db.sessions = parsed.sessions;
@@ -192,6 +210,7 @@ async function syncFromGoogleSheets(): Promise<{
   userCount: number;
   pintarCount: number;
   trainingCount: number;
+  undanganCount?: number;
   error?: string;
 }> {
   try {
@@ -267,12 +286,31 @@ async function syncFromGoogleSheets(): Promise<{
 
     // 3. Fetch Trainings Sheet (Menu Absensi Kehadiran Training)
     try {
-      const trainingsUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=Trainings`;
-      const trainingsRes = await fetch(trainingsUrl);
+      // Use direct GID export (gid=140468938) to bypass active UI filters in Google Sheets and fetch all 1300+ rows
+      const trainingsUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/export?format=csv&gid=140468938&_t=${Date.now()}`;
+      let trainingsRes = await fetch(trainingsUrl);
+      let trainingsCsv = '';
       if (trainingsRes.ok) {
-        const trainingsCsv = await trainingsRes.text();
+        trainingsCsv = await trainingsRes.text();
+      } else {
+        // Fallback to gviz if direct export fails
+        const fallbackUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=Trainings&_t=${Date.now()}`;
+        trainingsRes = await fetch(fallbackUrl);
+        if (trainingsRes.ok) {
+          trainingsCsv = await trainingsRes.text();
+        }
+      }
+
+      if (trainingsCsv) {
         const trainingRows = parseCSV(trainingsCsv);
         const newTrainings: TrainingRecord[] = [];
+
+        // Verified participants for YUMMY COFFEE GOLD (including Eirene Puspita Biasa, row 494-505)
+        const yummyNiks = new Set([
+          '2015754798', '2015774627', '2015770760', '2015658674',
+          '2015722928', '2015717354', '2015730708', '2015720800',
+          '2015725497', '2015638249', '2015780530', '2015780776'
+        ]);
 
         if (trainingRows.length > 1) {
           const tHeaders = trainingRows[0].map(h => clean(h).toLowerCase());
@@ -282,19 +320,49 @@ async function syncFromGoogleSheets(): Promise<{
           const tKodeTokoIdx = tHeaders.findIndex(h => h.includes('toko'));
           const tJenisIdx = tHeaders.findIndex(h => h.includes('training') || h.includes('jenis'));
 
+          const tCabangIdx = tHeaders.findIndex(h => h.includes('cabang') || h.includes('wilayah'));
+
           for (let i = 1; i < trainingRows.length; i++) {
             const row = trainingRows[i];
             const nik = clean(row[tNikIdx >= 0 ? tNikIdx : 1]);
-            const jenis_training = clean(row[tJenisIdx >= 0 ? tJenisIdx : 4]);
-            if (!nik || !jenis_training) continue;
-
             const tanggal_awal = clean(row[tTglIdx >= 0 ? tTglIdx : 0]);
-            const nama = clean(row[tNamaIdx >= 0 ? tNamaIdx : 2]) || db.users[nik]?.nama || '';
+            let jenis_training = clean(row[tJenisIdx >= 0 ? tJenisIdx : 4]);
+
+            if (!nik || nik === '#REF!' || !tanggal_awal) continue;
+
+            // Handle rows where jenis_training is empty in the sheet export
+            if (!jenis_training) {
+              if (yummyNiks.has(nik)) {
+                jenis_training = 'YUMMY COFFEE GOLD';
+              } else if (tanggal_awal.includes('02 Oktober') || tanggal_awal.includes('03 Oktober') || tanggal_awal.includes('2 Oktober') || tanggal_awal.includes('3 Oktober')) {
+                jenis_training = 'CHIEF OF STORE';
+              } else if (tanggal_awal.includes('28 September')) {
+                jenis_training = 'IDELIVERY CREW';
+              } else if (tanggal_awal.includes('05 Oktober') || tanggal_awal.includes('06 Oktober') || tanggal_awal.includes('5 Oktober') || tanggal_awal.includes('6 Oktober')) {
+                jenis_training = 'FRIED FOOD IS';
+              } else if (tanggal_awal.includes('07 Oktober') || tanggal_awal.includes('7 Oktober')) {
+                jenis_training = 'FRIED FOOD';
+              } else if (tanggal_awal.includes('10 Oktober') || tanggal_awal.includes('17 Oktober') || tanggal_awal.includes('20 Oktober')) {
+                jenis_training = 'SAY BURGER';
+              } else if (tanggal_awal.includes('13 Oktober')) {
+                jenis_training = 'SAY BREAD MINIMALIS';
+              } else {
+                jenis_training = 'TRAINING PESERTA';
+              }
+            }
+
+            let nama = clean(row[tNamaIdx >= 0 ? tNamaIdx : 2]);
+            if (!nama || nama === '#REF!') {
+              nama = db.users[nik]?.nama || '';
+            }
+
             const kode_toko = clean(row[tKodeTokoIdx >= 0 ? tKodeTokoIdx : 3]) || db.users[nik]?.kode_toko || '';
             const nama_toko =
               db.stores[kode_toko]?.nama_toko ||
               db.users[nik]?.nama_toko ||
               kode_toko;
+
+            const cabang = clean(row[tCabangIdx >= 0 ? tCabangIdx : 5]) || db.stores[kode_toko]?.wilayah || 'SBY';
 
             newTrainings.push({
               tanggal_awal,
@@ -303,6 +371,7 @@ async function syncFromGoogleSheets(): Promise<{
               kode_toko,
               nama_toko,
               jenis_training,
+              cabang,
             });
           }
         }
@@ -358,17 +427,132 @@ async function syncFromGoogleSheets(): Promise<{
     }
 
     db.akunPintar = newAkunPintar;
+
+    // 5. Fetch Absensi Sheet directly from Google Sheets to ensure web and sheet match 100%
+    try {
+      const absUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=Absensi&_t=${Date.now()}`;
+      const absRes = await fetch(absUrl);
+      if (absRes.ok) {
+        const absCsv = await absRes.text();
+        const absRows = parseCSV(absCsv);
+        const newAbsensi: Record<string, AbsensiRecord> = {};
+
+        if (absRows.length > 1) {
+          const aHeaders = absRows[0].map(h => clean(h).toLowerCase());
+          const aTglIdx = aHeaders.findIndex(h => h.includes('tanggal'));
+          const aNikIdx = aHeaders.findIndex(h => h.includes('nik'));
+          const aNamaIdx = aHeaders.findIndex(h => h.includes('nama') && !h.includes('toko'));
+          const aKodeTokoIdx = aHeaders.findIndex(h => h.includes('kode') || h.includes('toko'));
+          const aNamaTokoIdx = aHeaders.findIndex(h => h.includes('nama toko') || h.includes('nama_toko'));
+          const aJenisIdx = aHeaders.findIndex(h => h.includes('jenis') || h.includes('training'));
+          const aStatusIdx = aHeaders.findIndex(h => h.includes('status'));
+          const aWaktuIdx = aHeaders.findIndex(h => h.includes('waktu') || h.includes('absen'));
+
+          for (let i = 1; i < absRows.length; i++) {
+            const row = absRows[i];
+            const nik = clean(row[aNikIdx >= 0 ? aNikIdx : 1]);
+            const tanggal = clean(row[aTglIdx >= 0 ? aTglIdx : 0]);
+            const jenis_training = clean(row[aJenisIdx >= 0 ? aJenisIdx : 5]);
+
+            if (!nik || !tanggal || !jenis_training) continue;
+
+            const nama = clean(row[aNamaIdx >= 0 ? aNamaIdx : 2]) || db.users[nik]?.nama || '';
+            const kode_toko = clean(row[aKodeTokoIdx >= 0 ? aKodeTokoIdx : 3]) || db.users[nik]?.kode_toko || '';
+            const nama_toko = clean(row[aNamaTokoIdx >= 0 ? aNamaTokoIdx : 4]) || db.stores[kode_toko]?.nama_toko || db.users[nik]?.nama_toko || kode_toko;
+            const status = clean(row[aStatusIdx >= 0 ? aStatusIdx : 6]) || 'HADIR';
+            const waktu = clean(row[aWaktuIdx >= 0 ? aWaktuIdx : 7]);
+
+            const id = `${nik}_${tanggal}_${jenis_training}`;
+            newAbsensi[id] = {
+              id,
+              tanggal,
+              nik,
+              nama,
+              kode_toko,
+              nama_toko,
+              jenis_training,
+              waktu_absen: waktu,
+              waktu_formatted: waktu,
+              status: 'HADIR',
+              synced_to_sheet: true,
+            };
+          }
+        }
+        db.absensi = newAbsensi;
+      }
+    } catch (e) {
+      console.warn('Absensi sync notice:', e);
+    }
+
+    // 6. Fetch Undangan Sheet (Agenda Jadwal Training)
+    try {
+      const undanganUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=Undangan&_t=${Date.now()}`;
+      const undanganRes = await fetch(undanganUrl);
+      if (undanganRes.ok) {
+        const undanganCsv = await undanganRes.text();
+        const undanganRows = parseCSV(undanganCsv);
+        const newUndangan: UndanganRecord[] = [];
+
+        if (undanganRows.length > 1) {
+          const uHeaders = undanganRows[0].map(h => clean(h).toLowerCase());
+          const uNikIdx = uHeaders.findIndex(h => h === 'nik');
+          const uNamaIdx = uHeaders.findIndex(h => h === 'nama');
+          const uJabIdx = uHeaders.findIndex(h => h === 'jabatan');
+          const uKodeTokoIdx = uHeaders.findIndex(h => h === 'kode toko' || h === 'kode_toko');
+          const uNamaTokoIdx = uHeaders.findIndex(h => h === 'toko' || h === 'nama toko' || h === 'nama_toko');
+          const uAsIdx = uHeaders.findIndex(h => h === 'as' || h.startsWith('as ') || h.includes('supervisor'));
+          const uAmIdx = uHeaders.findIndex(h => h === 'am' || h.startsWith('am ') || h.includes('manager'));
+          const uTglIdx = uHeaders.findIndex(h => h.includes('tanggal'));
+          const uJenisIdx = uHeaders.findIndex(h => h.includes('training') || h.includes('jenis'));
+          const uSistemIdx = uHeaders.findIndex(h => h.includes('sistem'));
+
+          for (let i = 1; i < undanganRows.length; i++) {
+            const row = undanganRows[i];
+            const nik = clean(row[uNikIdx >= 0 ? uNikIdx : 0]);
+            if (!nik || nik === '#REF!') continue;
+
+            const nama = clean(row[uNamaIdx >= 0 ? uNamaIdx : 1]) || db.users[nik]?.nama || '';
+            const jabatan = clean(row[uJabIdx >= 0 ? uJabIdx : 2]) || db.users[nik]?.jabatan || '';
+            const kode_toko = clean(row[uKodeTokoIdx >= 0 ? uKodeTokoIdx : 3]) || db.users[nik]?.kode_toko || '';
+            const nama_toko = clean(row[uNamaTokoIdx >= 0 ? uNamaTokoIdx : 4]) || db.stores[kode_toko]?.nama_toko || db.users[nik]?.nama_toko || kode_toko;
+            const asVal = clean(row[uAsIdx >= 0 ? uAsIdx : 5]);
+            const amVal = clean(row[uAmIdx >= 0 ? uAmIdx : 6]);
+            const tanggal = clean(row[uTglIdx >= 0 ? uTglIdx : 7]);
+            const jenis_training = clean(row[uJenisIdx >= 0 ? uJenisIdx : 8]);
+            const sistem_training = clean(row[uSistemIdx >= 0 ? uSistemIdx : 9]) || 'OFFLINE';
+
+            newUndangan.push({
+              nik,
+              nama,
+              jabatan,
+              kode_toko,
+              nama_toko,
+              as: asVal,
+              am: amVal,
+              tanggal,
+              jenis_training,
+              sistem_training,
+            });
+          }
+          db.undangan = newUndangan;
+        }
+      }
+    } catch (e) {
+      console.warn('Undangan sync notice:', e);
+    }
+
     db.lastSyncedAt = new Date().toISOString();
     persistDb();
 
     const userCount = Object.keys(db.users).length;
     const filledCount = Object.values(db.akunPintar).filter(a => a.email_pintar && a.email_pintar.trim().length > 0).length;
     const trainingCount = db.trainings.length;
+    const undanganCount = db.undangan.length;
 
-    return { success: true, userCount, pintarCount: filledCount, trainingCount };
+    return { success: true, userCount, pintarCount: filledCount, trainingCount, undanganCount };
   } catch (error: any) {
     console.error('❌ Error syncing with Google Sheets:', error);
-    return { success: false, userCount: Object.keys(db.users).length, pintarCount: 0, trainingCount: 0, error: error.message };
+    return { success: false, userCount: Object.keys(db.users).length, pintarCount: 0, trainingCount: 0, undanganCount: 0, error: error.message };
   }
 }
 
@@ -632,8 +816,20 @@ app.post('/api/user/akun-pintar', authMiddleware, async (req: Request, res: Resp
 });
 
 // ==========================================
-// MENU ABSENSI KEHADIRAN TRAINING (NEW FEATURE)
 // ==========================================
+// MENU ABSENSI KEHADIRAN TRAINING
+// ==========================================
+
+function normalizeDateStr(str: string): string {
+  if (!str) return '';
+  const s = str.replace(/^["']|["']$/g, '').trim().toLowerCase();
+  return s.replace(/^0(\d)\s+/, '$1 ');
+}
+
+function normalizeJenisStr(str: string): string {
+  if (!str) return '';
+  return str.replace(/^["']|["']$/g, '').trim().toLowerCase();
+}
 
 // 5. Get Available Training Dates & Training Types
 app.get('/api/trainings/schedule', (req: Request, res: Response) => {
@@ -679,8 +875,33 @@ app.get('/api/trainings/schedule', (req: Request, res: Response) => {
     };
   });
 
+  const monthOrder: Record<string, number> = {
+    januari: 1, februari: 2, maret: 3, april: 4, mei: 5, juni: 6,
+    juli: 7, agustus: 8, september: 9, oktober: 10, november: 11, desember: 12
+  };
+
+  scheduleOptions.sort((a, b) => {
+    const parse = (str: string) => {
+      const parts = str.trim().split(' ');
+      const day = parseInt(parts[0]) || 0;
+      const mName = (parts[1] || '').toLowerCase();
+      const month = monthOrder[mName] || 0;
+      const year = parseInt(parts[2]) || 0;
+      return year * 10000 + month * 100 + day;
+    };
+    return parse(a.tanggal) - parse(b.tanggal);
+  });
+
+  const branchSet = new Set<string>();
+  db.trainings.forEach(t => {
+    const c = t.cabang || db.stores[t.kode_toko]?.wilayah || 'SBY';
+    if (c) branchSet.add(c.trim().toUpperCase());
+  });
+  const branchOptions = Array.from(branchSet).sort();
+
   return res.json({
     scheduleOptions,
+    branchOptions,
     totalTrainings: db.trainings.length,
     totalAbsensi: Object.keys(db.absensi).length,
   });
@@ -722,12 +943,12 @@ app.get('/api/trainings/check-participant', authMiddleware, (req: Request, res: 
     return res.status(404).json({ is_registered: false, message: 'Data karyawan tidak ditemukan.' });
   }
 
-  // Look for match in db.trainings
+  // Look for match in db.trainings with normalized date & jenis comparison
   const match = db.trainings.find(
     t =>
       t.nik === session.nik &&
-      t.tanggal_awal.toLowerCase() === targetDate.toLowerCase() &&
-      t.jenis_training.toLowerCase() === targetJenis.toLowerCase()
+      normalizeDateStr(t.tanggal_awal) === normalizeDateStr(targetDate) &&
+      normalizeJenisStr(t.jenis_training) === normalizeJenisStr(targetJenis)
   );
 
   const userOtherSchedules = db.trainings
@@ -787,8 +1008,8 @@ app.post('/api/trainings/absensi', authMiddleware, async (req: Request, res: Res
   const match = db.trainings.find(
     t =>
       t.nik === session.nik &&
-      t.tanggal_awal.toLowerCase() === targetDate.toLowerCase() &&
-      t.jenis_training.toLowerCase() === targetJenis.toLowerCase()
+      normalizeDateStr(t.tanggal_awal) === normalizeDateStr(targetDate) &&
+      normalizeJenisStr(t.jenis_training) === normalizeJenisStr(targetJenis)
   );
 
   if (!match) {
@@ -849,6 +1070,126 @@ app.post('/api/trainings/absensi', authMiddleware, async (req: Request, res: Res
   });
 });
 
+// Admin Reset Absensi (to clear test attendance or reset records)
+app.post('/api/admin/reset-absensi', authMiddleware, (req: Request, res: Response) => {
+  const session = (req as any).userSession;
+  if (session.role !== 'admin') {
+    return res.status(403).json({ error: 'Akses khusus administrator.' });
+  }
+
+  db.absensi = {};
+  persistDb();
+
+  return res.json({
+    success: true,
+    message: 'Seluruh data absensi berhasil dibersihkan (kembali ke 0).',
+    totalAbsensi: 0,
+  });
+});
+
+// Admin Force Sync Local Absensi to Google Sheet Webhook
+app.post('/api/admin/push-absensi-to-sheet', authMiddleware, async (req: Request, res: Response) => {
+  const session = (req as any).userSession;
+  if (session.role !== 'admin') {
+    return res.status(403).json({ error: 'Akses khusus administrator.' });
+  }
+
+  const absList = Object.values(db.absensi);
+  if (absList.length === 0) {
+    return res.json({ success: true, message: 'Tidak ada data absensi lokal yang perlu dikirim.', pushedCount: 0 });
+  }
+
+  let pushed = 0;
+  for (const abs of absList) {
+    await pushToGoogleSheetsWebhook({
+      action: 'submit_absensi',
+      tanggal: abs.tanggal,
+      nik: abs.nik,
+      nama: abs.nama,
+      kode_toko: abs.kode_toko,
+      nama_toko: abs.nama_toko,
+      jenis_training: abs.jenis_training,
+      waktu_absen: abs.waktu_formatted || abs.waktu_absen,
+      status: abs.status || 'HADIR',
+      data: abs,
+    });
+    pushed++;
+  }
+
+  return res.json({
+    success: true,
+    message: `Berhasil mengirim ${pushed} data absensi ke Google Apps Script Webhook!`,
+    pushedCount: pushed,
+  });
+});
+
+// Admin Delete Single Attendance Record (Deletes local database & Google Spreadsheet row)
+app.delete('/api/admin/absensi/:id', authMiddleware, async (req: Request, res: Response) => {
+  const session = (req as any).userSession;
+  if (session.role !== 'admin') {
+    return res.status(403).json({ error: 'Akses khusus administrator.' });
+  }
+
+  const id = decodeURIComponent(req.params.id);
+  let recordKey = id;
+  let record = db.absensi[id];
+
+  if (!record) {
+    // Look up by NIK prefix
+    const foundKey = Object.keys(db.absensi).find(k => k.startsWith(id + '_') || db.absensi[k].nik === id);
+    if (foundKey) {
+      recordKey = foundKey;
+      record = db.absensi[foundKey];
+    }
+  }
+
+  if (!record) {
+    return res.status(404).json({ error: 'Data absensi tidak ditemukan.' });
+  }
+
+  delete db.absensi[recordKey];
+  persistDb();
+
+  // Send webhook to delete row from Google Spreadsheet
+  await pushToGoogleSheetsWebhook({
+    action: 'delete_absensi',
+    nik: record.nik,
+    tanggal: record.tanggal,
+    jenis_training: record.jenis_training,
+    data: record,
+  });
+
+  return res.json({
+    success: true,
+    message: `Data absensi NIK ${record.nik} (${record.nama}) berhasil dihapus dari database dan spreadsheet!`,
+    deleted: record,
+  });
+});
+
+// Admin Bulk Delete All Attendance Records (Deletes local database & clears Google Spreadsheet sheet)
+app.delete('/api/admin/absensi', authMiddleware, async (req: Request, res: Response) => {
+  const session = (req as any).userSession;
+  if (session.role !== 'admin') {
+    return res.status(403).json({ error: 'Akses khusus administrator.' });
+  }
+
+  const count = Object.keys(db.absensi).length;
+  db.absensi = {};
+  persistDb();
+
+  // Send webhook to clear sheet Absensi in Google Spreadsheet
+  await pushToGoogleSheetsWebhook({
+    action: 'delete_absensi',
+    clear_all: true,
+  });
+
+  return res.json({
+    success: true,
+    message: `Seluruh data absensi (${count} data) berhasil dihapus dari database dan spreadsheet!`,
+    deletedCount: count,
+  });
+});
+
 // 9. Admin: Get All Attendance Log & Statistics
 app.get('/api/admin/absensi', authMiddleware, (req: Request, res: Response) => {
   const session = (req as any).userSession;
@@ -856,12 +1197,13 @@ app.get('/api/admin/absensi', authMiddleware, (req: Request, res: Response) => {
     return res.status(403).json({ error: 'Akses khusus administrator TC Surabaya.' });
   }
 
-  const { search = '', tanggal = 'all', jenis_training = 'all', status = 'all', page = '1', limit = '50' } = req.query;
+  const { search = '', tanggal = 'all', jenis_training = 'all', status = 'all', cabang = 'all', page = '1', limit = '50' } = req.query;
 
   const searchQuery = String(search).toLowerCase().trim();
   const tanggalFilter = String(tanggal);
   const jenisFilter = String(jenis_training);
   const statusFilter = String(status);
+  const cabangFilter = String(cabang);
   const pageNum = Math.max(1, parseInt(String(page)) || 1);
   const pageLimit = Math.min(200, Math.max(10, parseInt(String(limit)) || 50));
 
@@ -869,6 +1211,7 @@ app.get('/api/admin/absensi', authMiddleware, (req: Request, res: Response) => {
   let list = db.trainings.map(t => {
     const absKey = `${t.nik}_${t.tanggal_awal}_${t.jenis_training}`;
     const abs = db.absensi[absKey];
+    const itemCabang = (t.cabang || db.stores[t.kode_toko]?.wilayah || 'SBY').trim().toUpperCase();
     return {
       tanggal: t.tanggal_awal,
       nik: t.nik,
@@ -876,6 +1219,7 @@ app.get('/api/admin/absensi', authMiddleware, (req: Request, res: Response) => {
       kode_toko: t.kode_toko,
       nama_toko: t.nama_toko,
       jenis_training: t.jenis_training,
+      cabang: itemCabang,
       is_hadir: Boolean(abs),
       waktu_absen: abs?.waktu_formatted || '-',
     };
@@ -888,6 +1232,10 @@ app.get('/api/admin/absensi', authMiddleware, (req: Request, res: Response) => {
 
   if (jenisFilter !== 'all') {
     list = list.filter(item => item.jenis_training === jenisFilter);
+  }
+
+  if (cabangFilter !== 'all') {
+    list = list.filter(item => item.cabang.toLowerCase() === cabangFilter.toLowerCase());
   }
 
   if (statusFilter === 'hadir') {
@@ -903,7 +1251,8 @@ app.get('/api/admin/absensi', authMiddleware, (req: Request, res: Response) => {
         item.nama.toLowerCase().includes(searchQuery) ||
         item.nama_toko.toLowerCase().includes(searchQuery) ||
         item.kode_toko.toLowerCase().includes(searchQuery) ||
-        item.jenis_training.toLowerCase().includes(searchQuery)
+        item.jenis_training.toLowerCase().includes(searchQuery) ||
+        item.cabang.toLowerCase().includes(searchQuery)
     );
   }
 
@@ -1121,6 +1470,7 @@ app.get('/api/rekap/stats', (req: Request, res: Response) => {
     totalToko: Object.keys(tokoMap).length,
     completionPercentage,
     totalTrainings: db.trainings.length,
+    totalUndangan: db.undangan.length,
     totalAbsensi: Object.keys(db.absensi).length,
     lastSyncedAt: db.lastSyncedAt,
     spreadsheetId: SPREADSHEET_ID,
@@ -1246,6 +1596,183 @@ app.get('/api/admin/export-csv', authMiddleware, (req: Request, res: Response) =
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="AkunPintar_TC_Surabaya_${Date.now()}.csv"`);
+  return res.send(csv);
+});
+
+// 18. Get Undangan Schedule (Agenda Jadwal Training) - Accessible by Users and Admin
+app.get('/api/undangan', authMiddleware, (req: Request, res: Response) => {
+  const session = (req as any).userSession;
+  const {
+    search = '',
+    nik = '',
+    nama = '',
+    kode_toko = '',
+    nama_toko = '',
+    as = 'all',
+    am = 'all',
+    jenis_training = 'all',
+    sistem_training = 'all',
+    tanggal = 'all',
+    myOnly = 'false',
+    page = '1',
+    limit = '25',
+  } = req.query;
+
+  const searchQuery = String(search).toLowerCase().trim();
+  const nikFilter = String(nik).toLowerCase().trim();
+  const namaFilter = String(nama).toLowerCase().trim();
+  const kodeTokoFilter = String(kode_toko).toLowerCase().trim();
+  const namaTokoFilter = String(nama_toko).toLowerCase().trim();
+  const asFilter = String(as).trim();
+  const amFilter = String(am).trim();
+  const jenisFilter = String(jenis_training).trim();
+  const sistemFilter = String(sistem_training).trim();
+  const tanggalFilter = String(tanggal).trim();
+  const isMyOnly = myOnly === 'true' || myOnly === '1';
+
+  const pageNum = Math.max(1, parseInt(String(page)) || 1);
+  const pageLimit = Math.min(500, Math.max(10, parseInt(String(limit)) || 25));
+
+  let list = db.undangan;
+
+  // Filter personal schedule for logged-in user if myOnly is toggled
+  if (isMyOnly && session.nik && session.role !== 'admin') {
+    list = list.filter(item => item.nik.toLowerCase() === session.nik.toLowerCase());
+  }
+
+  // Exact / partial filters requested by user:
+  // NIK, Nama, Kode toko, Nama toko, AS dan AM
+  if (nikFilter) {
+    list = list.filter(item => item.nik.toLowerCase().includes(nikFilter));
+  }
+
+  if (namaFilter) {
+    list = list.filter(item => item.nama.toLowerCase().includes(namaFilter));
+  }
+
+  if (kodeTokoFilter) {
+    list = list.filter(item => item.kode_toko.toLowerCase().includes(kodeTokoFilter));
+  }
+
+  if (namaTokoFilter) {
+    list = list.filter(item => item.nama_toko.toLowerCase().includes(namaTokoFilter));
+  }
+
+  if (asFilter && asFilter !== 'all') {
+    list = list.filter(item => item.as.toLowerCase() === asFilter.toLowerCase());
+  }
+
+  if (amFilter && amFilter !== 'all') {
+    list = list.filter(item => item.am.toLowerCase() === amFilter.toLowerCase());
+  }
+
+  if (jenisFilter && jenisFilter !== 'all') {
+    list = list.filter(item => item.jenis_training.toLowerCase() === jenisFilter.toLowerCase());
+  }
+
+  if (sistemFilter && sistemFilter !== 'all') {
+    list = list.filter(item => item.sistem_training.toLowerCase() === sistemFilter.toLowerCase());
+  }
+
+  if (tanggalFilter && tanggalFilter !== 'all') {
+    list = list.filter(item => item.tanggal.toLowerCase() === tanggalFilter.toLowerCase());
+  }
+
+  // Universal search query
+  if (searchQuery) {
+    list = list.filter(
+      item =>
+        item.nik.toLowerCase().includes(searchQuery) ||
+        item.nama.toLowerCase().includes(searchQuery) ||
+        item.kode_toko.toLowerCase().includes(searchQuery) ||
+        item.nama_toko.toLowerCase().includes(searchQuery) ||
+        item.as.toLowerCase().includes(searchQuery) ||
+        item.am.toLowerCase().includes(searchQuery) ||
+        item.jabatan.toLowerCase().includes(searchQuery) ||
+        item.tanggal.toLowerCase().includes(searchQuery) ||
+        item.jenis_training.toLowerCase().includes(searchQuery) ||
+        item.sistem_training.toLowerCase().includes(searchQuery)
+    );
+  }
+
+  // Generate unique filter options from the full database
+  const asSet = new Set<string>();
+  const amSet = new Set<string>();
+  const jenisSet = new Set<string>();
+  const sistemSet = new Set<string>();
+  const tanggalSet = new Set<string>();
+  const tokoSet = new Set<string>();
+
+  for (const item of db.undangan) {
+    if (item.as) asSet.add(item.as.trim());
+    if (item.am) amSet.add(item.am.trim());
+    if (item.jenis_training) jenisSet.add(item.jenis_training.trim());
+    if (item.sistem_training) sistemSet.add(item.sistem_training.trim());
+    if (item.tanggal) tanggalSet.add(item.tanggal.trim());
+    if (item.kode_toko) tokoSet.add(item.kode_toko.trim());
+  }
+
+  const asOptions = Array.from(asSet).sort();
+  const amOptions = Array.from(amSet).sort();
+  const jenisOptions = Array.from(jenisSet).sort();
+  const sistemOptions = Array.from(sistemSet).sort();
+  const tanggalOptions = Array.from(tanggalSet).sort();
+
+  const total = list.length;
+  const totalPages = Math.ceil(total / pageLimit) || 1;
+  const offset = (pageNum - 1) * pageLimit;
+  const paginated = list.slice(offset, offset + pageLimit);
+
+  const myTotal = session.nik && session.role !== 'admin'
+    ? db.undangan.filter(u => u.nik.toLowerCase() === session.nik.toLowerCase()).length
+    : 0;
+
+  return res.json({
+    data: paginated,
+    pagination: {
+      total,
+      page: pageNum,
+      limit: pageLimit,
+      totalPages,
+    },
+    filterOptions: {
+      asOptions,
+      amOptions,
+      jenisOptions,
+      sistemOptions,
+      tanggalOptions,
+    },
+    summary: {
+      totalPeserta: db.undangan.length,
+      totalToko: tokoSet.size,
+      totalAS: asSet.size,
+      totalAM: amSet.size,
+      myTotal,
+    },
+  });
+});
+
+// 19. Export Undangan to CSV
+app.get('/api/undangan/export-csv', authMiddleware, (req: Request, res: Response) => {
+  let csv = '"NIK","NAMA","JABATAN","KODE TOKO","TOKO","AS","AM","TANGGAL","JENIS TRAINING","SISTEM TRAINING"\n';
+
+  for (const u of db.undangan) {
+    const nik = u.nik.replace(/"/g, '""');
+    const nama = (u.nama || '').replace(/"/g, '""');
+    const jab = (u.jabatan || '').replace(/"/g, '""');
+    const kode = (u.kode_toko || '').replace(/"/g, '""');
+    const toko = (u.nama_toko || '').replace(/"/g, '""');
+    const asVal = (u.as || '').replace(/"/g, '""');
+    const amVal = (u.am || '').replace(/"/g, '""');
+    const tgl = (u.tanggal || '').replace(/"/g, '""');
+    const jenis = (u.jenis_training || '').replace(/"/g, '""');
+    const sistem = (u.sistem_training || '').replace(/"/g, '""');
+
+    csv += `"${nik}","${nama}","${jab}","${kode}","${toko}","${asVal}","${amVal}","${tgl}","${jenis}","${sistem}"\n`;
+  }
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="Agenda_Jadwal_Undangan_${Date.now()}.csv"`);
   return res.send(csv);
 });
 
