@@ -1,0 +1,6 @@
+{
+  "name": "Portal TC Surabaya",
+  "description": "Portal Resmi Karyawan & Administrasi Training Center Surabaya - Sinkronisasi Akun Pintar, Rekap Data, dan Dashboard Progres Proyek Real-Time.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
